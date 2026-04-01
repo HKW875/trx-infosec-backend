@@ -1,21 +1,32 @@
 // ====================== TRX InfoSec Backend - FINAL FIXED VERSION ======================
 
+require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
-
 const app = express();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = 'trx-infosec-secure-jwt-key-2026-change-in-production';
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5500";
+const MONGO_URI = process.env.MONGO_URI;
+mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log("MongoDB connected"))
+  .catch(err => console.error(err));
+
+// Configure CORS
+app.use(cors({
+    origin: FRONTEND_URL,
+    credentials: true
+}));
 
 // ========================== MIDDLEWARE ==========================
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] }));
 app.use(express.json({ limit: '10mb' }));
 
 // ========================== MONGODB CONNECTION ==========================
-const MONGO_URI = 'mongodb+srv://wambuguhkw_db_user:vBp8rTGxvBp8rTGx@cluster01login.prn6txc.mongodb.net/trxinfosec?retryWrites=true&w=majority&appName=Cluster01login';
+
 
 mongoose.connect(MONGO_URI)
     .then(() => console.log('✅ MongoDB Atlas Connected Successfully'))
