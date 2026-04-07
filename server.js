@@ -7,22 +7,29 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 10000;
 const JWT_SECRET = 'trx-infosec-secure-jwt-key-2026-change-in-production';
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5500";
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://trxinfosec.hkw875.workers.dev";
 const MONGO_URI = process.env.MONGO_URI;
-mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log("MongoDB connected"))
-  .catch(err => console.error(err));
+//mongoose.connect(process.env.MONGO_URI || 'your-mongodb-uri');
 
 // Configure CORS
-app.use(cors({
-    origin: FRONTEND_URL,
-    credentials: true
-}));
+// CORS configuration for your custom domain
+const corsOptions = {
+  origin: ['https://growthbase.net', 'https://trxinfosec.hkw875.workers.dev'],    // ← Change to your actual frontend domain
+  // If you have multiple domains (e.g. staging + production):
+  // origin: ['https://yourapp.com', 'https://staging.yourapp.com'],
+ 
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: true,          // Important for login (cookies/sessions)
+  maxAge: 86400               // Cache preflight for 24 hours
+};
+
+app.use(cors(corsOptions));
 
 // ========================== MIDDLEWARE ==========================
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] }));
+//app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'] }));
 app.use(express.json({ limit: '10mb' }));
 
 // ========================== MONGODB CONNECTION ==========================
@@ -36,8 +43,8 @@ mongoose.connect(MONGO_URI)
 const userSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, required: true },
-    permanentID: { 
-        type: String, 
+    permanentID: {
+        type: String,
         unique: true,
         default: () => '1' + Math.floor(100000000 + Math.random() * 900000000).toString().slice(1)
     },
@@ -55,10 +62,11 @@ const userSchema = new mongoose.Schema({
     consentGiven: { type: Boolean, default: true },
 
     documents: [{
-        name: String,
-        size: String,
-        uploadDate: { type: Date, default: Date.now },
-        data: String
+    name: String,
+    filename: String,
+    contentType: String,
+    data: Buffer,
+    uploadDate: { type: Date, default: Date.now }
     }],
 
     createdAt: { type: Date, default: Date.now },
@@ -101,10 +109,10 @@ app.post('/api/register', async (req, res) => {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        const user = new User({ 
-            email, 
-            password: hashedPassword, 
-            consentGiven: true 
+        const user = new User({
+            email,
+            password: hashedPassword,
+            consentGiven: true
         });
 
         if (email === 'wambuguhkw@gmail.com') {
@@ -184,6 +192,68 @@ app.post('/api/search-profiles', async (req, res) => {
     } catch (err) {
         res.status(500).json([]);
     }
+});
+
+// Routes (add to your router)
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
+
+// Upload multiple documents
+app.post('/api/documents/upload', authMiddleware, upload.array('documents'), async (req, res) => {
+  try {
+    const documentNames = req.body.documentNames; // array from form
+    const files = req.files;
+    console.log("FILES:", files);
+    console.log("NAMES:", documentNames);
+
+    if (!files || files.length === 0) {
+      return res.status(400).json({ msg: "No files received" });
+    }
+    const user = await User.findOne({ email: req.user.email });
+    if (!user) return res.status(404).json({ msg: "User not found" });
+
+    for (let i = 0; i < files.length; i++) {
+      user.documents.push({
+        name: Array.isArray(documentNames) ? documentNames[i] : documentNames,
+        filename: files[i].originalname,
+        contentType: files[i].mimetype,
+        data: files[i].buffer
+      });
+    }
+    await user.save();
+    res.json({ msg: "Documents saved to MongoDB" });
+  } catch (err) {
+    res.status(500).json({ msg: err.message });
+  }
+});
+
+// View document
+app.get('/api/documents/:docId/view', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findOne({ email: req.user.email });
+    const doc = user.documents.id(req.params.docId);
+    if (!doc) return res.status(404).send("Document not found");
+
+    res.set('Content-Type', doc.contentType);
+    res.send(doc.data);
+  } catch (err) {
+    res.status(500).send("Error");
+  }
+});
+
+// Download document
+app.get('/api/documents/:docId/download', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findOne({ email: req.user.email });
+    const doc = user.documents.id(req.params.docId);
+    if (!doc) return res.status(404).send("Document not found");
+
+    res.set('Content-Type', doc.contentType);
+    res.set('Content-Disposition', `attachment; filename="${doc.filename}"`);
+    res.send(doc.data);
+  } catch (err) {
+    res.status(500).send("Error");
+  }
 });
 
 // ========================== START SERVER ==========================
