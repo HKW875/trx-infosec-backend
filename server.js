@@ -12,6 +12,7 @@ const JWT_SECRET = 'trx-infosec-secure-jwt-key-2026-change-in-production';
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://trxinfosec.hkw875.workers.dev";
 const MONGO_URI = process.env.MONGO_URI;
 //mongoose.connect(process.env.MONGO_URI || 'your-mongodb-uri');
+const CALLBACK_URL = process.env.MPESA_CALLBACK_URL;
 
 // Configure CORS
 // CORS configuration for your custom domain
