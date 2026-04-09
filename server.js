@@ -1,5 +1,6 @@
 // ====================== TRX InfoSec Backend - FINAL FIXED VERSION ======================
 require('dotenv').config();
+const nodemailer = require('nodemailer');
 const express = require('express');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
@@ -58,7 +59,8 @@ const userSchema = new mongoose.Schema({
     }],
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
-    plan: { type: String, default: 'free' } // Added for plan tracking
+    plan: { type: String, default: 'free' }, // Added for plan tracking
+    lastLogin: { type: Date }   // ← NEW: Last Login tracking
 });
 const User = mongoose.model('User', userSchema);
 
@@ -205,8 +207,14 @@ app.post('/api/login', async (req, res) => {
     try {
         const user = await User.findOne({ email });
         if (!user) return res.status(400).json({ msg: 'Invalid credentials' });
+        
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(400).json({ msg: 'Invalid credentials' });
+
+        // Update last login time
+        user.lastLogin = new Date();
+        await user.save();
+
         const token = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
         res.json({ token, msg: 'Login successful' });
     } catch (err) {
@@ -309,6 +317,80 @@ app.get('/api/documents/:docId/download', authMiddleware, async (req, res) => {
   } catch (err) {
     res.status(500).send("Error");
   }
+});
+
+// ========================== PROFILE VERIFICATION (OTP) ROUTES - ADDED TO FIX "Create/Edit Profile" BUTTON ==========================
+
+// Generate 6-digit OTP
+function generateOTP() {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+// Store OTP temporarily (in production use Redis)
+const otpStore = new Map();
+
+// Send verification code for profile editing
+app.post('/api/send-profile-verification', authMiddleware, async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email || email !== req.user.email) {
+            return res.status(400).json({ msg: "Invalid email" });
+        }
+
+        const otp = generateOTP();
+        otpStore.set(email, { otp, expires: Date.now() + 10 * 60 * 1000 }); // 10 minutes
+
+        // Configure nodemailer (using Gmail - change to your preferred service)
+        const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: process.env.EMAIL_USER,        // Your Gmail
+                pass: process.env.EMAIL_APP_PASSWORD // App password (not normal password)
+            }
+        });
+
+        await transporter.sendMail({
+            from: `"GrowthBase" <${process.env.EMAIL_USER}>`,
+            to: email,
+            subject: "GrowthBase - Profile Edit Verification Code",
+            html: `
+                <h2>Profile Edit Verification</h2>
+                <p>Your 6-digit verification code is: <strong>${otp}</strong></p>
+                <p>This code will expire in 10 minutes.</p>
+                <p>If you did not request this, please ignore this email.</p>
+            `
+        });
+
+        res.json({ msg: "Verification code sent to your email" });
+    } catch (err) {
+        console.error("Send OTP error:", err);
+        res.status(500).json({ msg: "Failed to send verification code" });
+    }
+});
+
+// Verify OTP
+app.post('/api/verify-profile-otp', authMiddleware, async (req, res) => {
+    try {
+        const { email, otp } = req.body;
+        if (!email || !otp) {
+            return res.status(400).json({ msg: "Email and OTP are required" });
+        }
+
+        const stored = otpStore.get(email);
+        if (!stored || stored.expires < Date.now()) {
+            return res.status(400).json({ msg: "Code expired. Please request a new one." });
+        }
+
+        if (stored.otp !== otp) {
+            return res.status(400).json({ msg: "Invalid verification code" });
+        }
+
+        otpStore.delete(email); // Clear OTP after successful use
+        res.json({ msg: "Verification successful" });
+    } catch (err) {
+        console.error("Verify OTP error:", err);
+        res.status(500).json({ msg: "Verification failed" });
+    }
 });
 
 // ========================== START SERVER ==========================
