@@ -300,7 +300,7 @@ app.post('/api/documents/upload', authMiddleware, upload.array('documents'), asy
       });
     }
     await user.save();
-    res.json({ msg: "Documents saved to MongoDB" });
+    res.json({ msg: "Documents saved successfully" });
   } catch (err) {
     res.status(500).json({ msg: err.message });
   }
