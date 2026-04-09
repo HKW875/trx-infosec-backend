@@ -67,16 +67,24 @@ const User = mongoose.model('User', userSchema);
 // ========================== AUTH MIDDLEWARE ==========================
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ msg: 'No token provided' });
-    }
-    try {
-        const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
-        req.user = decoded;
-        next();
-    } catch (err) {
-        res.status(401).json({ msg: 'Invalid token' });
-    }
+if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ msg: 'Unauthorized' });
+}
+
+const token = authHeader.split(' ')[1];
+
+// 🚨 CRITICAL FIX
+if (!token || token === 'null' || token === 'undefined') {
+    return res.status(401).json({ msg: 'Unauthorized' });
+}
+
+try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+} catch (err) {
+    return res.status(401).json({ msg: 'Unauthorized' });
+}
 };
 
 // ========================== M-PESA DARAJA INTEGRATION ==========================
@@ -249,7 +257,7 @@ app.post('/api/profile', authMiddleware, async (req, res) => {
     }
 });
 
-app.post('/api/search-profiles', async (req, res) => {
+app.post('/api/search-profiles', authMiddleware, async (req, res) => {
     const { term } = req.body;
     if (!term || term.trim().length < 2) return res.json([]);
     try {
