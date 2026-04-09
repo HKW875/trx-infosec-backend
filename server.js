@@ -83,6 +83,26 @@ const MPESA_CONSUMER_SECRET = process.env.MPESA_CONSUMER_SECRET;
 const MPESA_SHORTCODE = process.env.MPESA_SHORTCODE;
 const MPESA_PASSKEY = process.env.MPESA_PASSKEY;
 const MPESA_BASE_URL = 'https://sandbox.safaricom.co.ke'; // Change to https://api.safaricom.co.ke for production
+let isLoggedOut = false;
+function logout() {
+    clearTimeout(inactivityTimer);
+    clearTimeout(warningTimer);
+
+    isLoggedOut = true; // ✅ ADD THIS
+
+    currentToken = null;
+    currentLoggedInEmail = null;
+
+    isNewUser = false;
+    hasStartedPlan = false;
+
+    sessionStorage.clear();
+
+    document.getElementById("mainApp").classList.add("hidden");
+    document.getElementById("authScreen").classList.remove("hidden");
+
+    document.getElementById("inactivityWarningModal").style.display = "none";
+}
 
 // Get OAuth Token
 async function getMpesaAccessToken() {
