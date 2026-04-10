@@ -59,6 +59,14 @@ const userSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
     plan: { type: String, default: 'free' } // Added for plan tracking
+    // ================= SECRET CODE + REFERRAL =================
+    secretCode: { type: String }, // hashed
+    secretCodeLogs: [
+        {
+            date: { type: Date, default: Date.now }
+        }
+    ],
+    referredBy: { type: String, trim: true },
 });
 const User = mongoose.model('User', userSchema);
 
@@ -84,25 +92,7 @@ const MPESA_SHORTCODE = process.env.MPESA_SHORTCODE;
 const MPESA_PASSKEY = process.env.MPESA_PASSKEY;
 const MPESA_BASE_URL = 'https://sandbox.safaricom.co.ke'; // Change to https://api.safaricom.co.ke for production
 let isLoggedOut = false;
-function logout() {
-    clearTimeout(inactivityTimer);
-    clearTimeout(warningTimer);
 
-    isLoggedOut = true; // ✅ ADD THIS
-
-    currentToken = null;
-    currentLoggedInEmail = null;
-
-    isNewUser = false;
-    hasStartedPlan = false;
-
-    sessionStorage.clear();
-
-    document.getElementById("mainApp").classList.add("hidden");
-    document.getElementById("authScreen").classList.remove("hidden");
-
-    document.getElementById("inactivityWarningModal").style.display = "none";
-}
 
 // Get OAuth Token
 async function getMpesaAccessToken() {
@@ -247,14 +237,53 @@ app.get('/api/profile', authMiddleware, async (req, res) => {
 
 app.post('/api/profile', authMiddleware, async (req, res) => {
     try {
-        const updateData = { ...req.body };
+        const { secretCodeInput, referredBy, ...updateData } = req.body;
+
+        const user = await User.findOne({ email: req.user.email });
+
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+
+        // ================= SECRET CODE VALIDATION =================
+        if (user.secretCode) {
+            if (!secretCodeInput) {
+                return res.status(400).json({ msg: 'Secret code required to save changes.' });
+            }
+
+            const isMatch = await bcrypt.compare(secretCodeInput, user.secretCode);
+            if (!isMatch) {
+                return res.status(400).json({ msg: 'Incorrect secret code.' });
+            }
+
+            // Log usage
+            user.secretCodeLogs.push({ date: new Date() });
+        }
+
+        // ================= NEW SECRET CODE CREATION =================
+        if (!user.secretCode && secretCodeInput) {
+            const regex = /^(?=(?:.*\d){4,})(?=(?:.*[A-Za-z]){2,}).+$/;
+            if (!regex.test(secretCodeInput)) {
+                return res.status(400).json({
+                    msg: 'Secret code must contain at least 4 numbers and 2 letters.'
+                });
+            }
+
+            const salt = await bcrypt.genSalt(10);
+            user.secretCode = await bcrypt.hash(secretCodeInput, salt);
+        }
+
+        // ================= SAVE OTHER DATA =================
         delete updateData.email;
-        const user = await User.findOneAndUpdate(
-            { email: req.user.email },
-            { $set: updateData },
-            { new: true }
-        ).select('-password');
+
+        Object.assign(user, updateData);
+
+        if (referredBy !== undefined) {
+            user.referredBy = referredBy;
+        }
+
+        await user.save();
+
         res.json({ msg: 'Profile saved successfully', user });
+
     } catch (err) {
         console.error('Profile save error:', err);
         res.status(500).json({ msg: 'Failed to save profile' });
@@ -272,7 +301,7 @@ app.post('/api/search-profiles', async (req, res) => {
                 { phone: { $regex: term, $options: 'i' } },
                 { email: { $regex: term, $options: 'i' } }
             ]
-        }).select('-password -documents');
+        }).select('-password -documents -secretCode -secretCodeLogs');
         res.json(results);
     } catch (err) {
         res.status(500).json([]);
