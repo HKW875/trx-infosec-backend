@@ -58,7 +58,7 @@ const userSchema = new mongoose.Schema({
     }],
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
-    plan: { type: String, default: 'free' } // Added for plan tracking
+    plan: { type: String, default: 'free' }, // Added for plan tracking
     // ================= SECRET CODE + REFERRAL =================
     secretCode: { type: String }, // hashed
     secretCodeLogs: [
