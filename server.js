@@ -12,7 +12,6 @@ const JWT_SECRET = 'trx-infosec-secure-jwt-key-2026-change-in-production';
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://trxinfosec.hkw875.workers.dev";
 const MONGO_URI = process.env.MONGO_URI;
 const CALLBACK_URL = process.env.MPESA_CALLBACK_URL || "https://trx-infosec-backend-vvrq.onrender.com/api/mpesa/callback";
-
 // ========================== MIDDLEWARE ==========================
 const corsOptions = {
   origin: ['https://growthbase.net', 'https://trxinfosec.hkw875.workers.dev'],
@@ -23,12 +22,10 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
-
 // ========================== MONGODB CONNECTION ==========================
 mongoose.connect(MONGO_URI)
     .then(() => console.log('✅ MongoDB Atlas Connected Successfully'))
     .catch(err => console.error('❌ MongoDB Connection Error:', err.message));
-
 // ========================== USER MODEL ==========================
 const userSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -67,9 +64,13 @@ const userSchema = new mongoose.Schema({
         }
     ],
     referredBy: { type: String, trim: true },
+
+    // ================= NEW FIELDS ADDED =================
+    businessType: { type: String, trim: true },
+    totalCapitalRequired: { type: String, trim: true },
+    purposeOfCapital: { type: String, trim: true }
 });
 const User = mongoose.model('User', userSchema);
-
 // ========================== AUTH MIDDLEWARE ==========================
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -84,7 +85,6 @@ const authMiddleware = (req, res, next) => {
         res.status(401).json({ msg: 'Invalid token' });
     }
 };
-
 // ========================== M-PESA DARAJA INTEGRATION ==========================
 const MPESA_CONSUMER_KEY = process.env.MPESA_CONSUMER_KEY;
 const MPESA_CONSUMER_SECRET = process.env.MPESA_CONSUMER_SECRET;
@@ -92,8 +92,6 @@ const MPESA_SHORTCODE = process.env.MPESA_SHORTCODE;
 const MPESA_PASSKEY = process.env.MPESA_PASSKEY;
 const MPESA_BASE_URL = 'https://sandbox.safaricom.co.ke'; // Change to https://api.safaricom.co.ke for production
 let isLoggedOut = false;
-
-
 // Get OAuth Token
 async function getMpesaAccessToken() {
     const auth = Buffer.from(`${MPESA_CONSUMER_KEY}:${MPESA_CONSUMER_SECRET}`).toString('base64');
@@ -102,20 +100,16 @@ async function getMpesaAccessToken() {
     });
     return response.data.access_token;
 }
-
 // STK Push Route
 app.post('/api/mpesa/stkpush', authMiddleware, async (req, res) => {
     try {
         const { phone, amount, planType, accountReference } = req.body;
-
         if (!phone || !amount || !planType) {
             return res.status(400).json({ msg: "Phone, amount and planType are required" });
         }
-
         const accessToken = await getMpesaAccessToken();
         const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, -3);
         const password = Buffer.from(`${MPESA_SHORTCODE}${MPESA_PASSKEY}${timestamp}`).toString('base64');
-
         const payload = {
             BusinessShortCode: MPESA_SHORTCODE,
             Password: password,
@@ -129,15 +123,12 @@ app.post('/api/mpesa/stkpush', authMiddleware, async (req, res) => {
             AccountReference: accountReference || "BodaGoPlan",
             TransactionDesc: planType
         };
-
         const response = await axios.post(
             `${MPESA_BASE_URL}/mpesa/stkpush/v1/processrequest`,
             payload,
             { headers: { Authorization: `Bearer ${accessToken}` } }
         );
-
         console.log("M-Pesa STK Push Response:", response.data);
-
         if (response.data.ResponseCode === "0") {
             // Optionally save pending payment in DB here later
             res.json({
@@ -148,7 +139,6 @@ app.post('/api/mpesa/stkpush', authMiddleware, async (req, res) => {
         } else {
             res.status(400).json({ msg: response.data.ResponseDescription || "Failed to initiate payment" });
         }
-
     } catch (err) {
         console.error("M-Pesa STK Error:", err.response?.data || err.message);
         res.status(500).json({
@@ -156,29 +146,25 @@ app.post('/api/mpesa/stkpush', authMiddleware, async (req, res) => {
         });
     }
 });
-
 // M-Pesa Callback Route
 app.post('/api/mpesa/callback', async (req, res) => {
     try {
         const callbackData = req.body;
         console.log("M-Pesa Callback Received:", JSON.stringify(callbackData, null, 2));
-
         // You can process successful payments here (update user plan, etc.)
         if (callbackData.Body?.stkCallback?.ResultCode === 0) {
             const phone = callbackData.Body.stkCallback.CallbackMetadata.Item.find(i => i.Name === 'PhoneNumber').Value;
             const amount = callbackData.Body.stkCallback.CallbackMetadata.Item.find(i => i.Name === 'Amount').Value;
-           
+          
             console.log(`✅ Payment successful! Amount: ${amount}, Phone: ${phone}`);
             // TODO: Update user plan in database here
         }
-
         res.json({ ResultCode: 0, ResultDesc: "Accepted" });
     } catch (err) {
         console.error("Callback error:", err);
         res.json({ ResultCode: 0, ResultDesc: "Accepted" });
     }
 });
-
 // ========================== EXISTING ROUTES (100% UNCHANGED) ==========================
 app.post('/api/register', async (req, res) => {
     const { email, password } = req.body;
@@ -209,7 +195,6 @@ app.post('/api/register', async (req, res) => {
         res.status(500).json({ msg: 'Registration failed. Please try again.' });
     }
 });
-
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
     try {
@@ -224,7 +209,6 @@ app.post('/api/login', async (req, res) => {
         res.status(500).json({ msg: 'Login failed' });
     }
 });
-
 app.get('/api/profile', authMiddleware, async (req, res) => {
     try {
         const user = await User.findOne({ email: req.user.email }).select('-password');
@@ -234,30 +218,23 @@ app.get('/api/profile', authMiddleware, async (req, res) => {
         res.status(500).json({ msg: 'Failed to load profile' });
     }
 });
-
 app.post('/api/profile', authMiddleware, async (req, res) => {
     try {
-        const { secretCodeInput, referredBy, ...updateData } = req.body;
-
+        const { secretCodeInput, referredBy, businessType, totalCapitalRequired, purposeOfCapital, ...updateData } = req.body;
         const user = await User.findOne({ email: req.user.email });
-
         if (!user) return res.status(404).json({ msg: 'User not found' });
-
         // ================= SECRET CODE VALIDATION =================
         if (user.secretCode) {
             if (!secretCodeInput) {
                 return res.status(400).json({ msg: 'Secret code required to save changes.' });
             }
-
             const isMatch = await bcrypt.compare(secretCodeInput, user.secretCode);
             if (!isMatch) {
                 return res.status(400).json({ msg: 'Incorrect secret code.' });
             }
-
             // Log usage
             user.secretCodeLogs.push({ date: new Date() });
         }
-
         // ================= NEW SECRET CODE CREATION =================
         if (!user.secretCode && secretCodeInput) {
             const regex = /^(?=(?:.*\d){4,})(?=(?:.*[A-Za-z]){2,}).+$/;
@@ -266,30 +243,26 @@ app.post('/api/profile', authMiddleware, async (req, res) => {
                     msg: 'Secret code must contain at least 4 numbers and 2 letters.'
                 });
             }
-
             const salt = await bcrypt.genSalt(10);
             user.secretCode = await bcrypt.hash(secretCodeInput, salt);
         }
-
         // ================= SAVE OTHER DATA =================
         delete updateData.email;
-
         Object.assign(user, updateData);
-
         if (referredBy !== undefined) {
             user.referredBy = referredBy;
         }
+        if (businessType !== undefined) user.businessType = businessType;
+        if (totalCapitalRequired !== undefined) user.totalCapitalRequired = totalCapitalRequired;
+        if (purposeOfCapital !== undefined) user.purposeOfCapital = purposeOfCapital;
 
         await user.save();
-
         res.json({ msg: 'Profile saved successfully', user });
-
     } catch (err) {
         console.error('Profile save error:', err);
         res.status(500).json({ msg: 'Failed to save profile' });
     }
 });
-
 app.post('/api/search-profiles', async (req, res) => {
     const { term } = req.body;
     if (!term || term.trim().length < 2) return res.json([]);
@@ -307,10 +280,8 @@ app.post('/api/search-profiles', async (req, res) => {
         res.status(500).json([]);
     }
 });
-
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
-
 app.post('/api/documents/upload', authMiddleware, upload.array('documents'), async (req, res) => {
   try {
     const documentNames = req.body.documentNames;
@@ -334,7 +305,6 @@ app.post('/api/documents/upload', authMiddleware, upload.array('documents'), asy
     res.status(500).json({ msg: err.message });
   }
 });
-
 app.get('/api/documents/:docId/view', authMiddleware, async (req, res) => {
   try {
     const user = await User.findOne({ email: req.user.email });
@@ -346,7 +316,6 @@ app.get('/api/documents/:docId/view', authMiddleware, async (req, res) => {
     res.status(500).send("Error");
   }
 });
-
 app.get('/api/documents/:docId/download', authMiddleware, async (req, res) => {
   try {
     const user = await User.findOne({ email: req.user.email });
@@ -359,13 +328,11 @@ app.get('/api/documents/:docId/download', authMiddleware, async (req, res) => {
     res.status(500).send("Error");
   }
 });
-
 // ========================== START SERVER ==========================
 app.listen(PORT, () => {
     console.log(`\n🚀 TRX InfoSec Backend running on http://localhost:${PORT}`);
     console.log('M-Pesa STK Push route is now active.\n');
 });
-
 app.get("/", (req, res) => {
   res.send("Server is running - M-Pesa integration active");
 });
