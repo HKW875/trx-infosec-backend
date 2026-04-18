@@ -12,7 +12,6 @@ const JWT_SECRET = 'trx-infosec-secure-jwt-key-2026-change-in-production';
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://trxinfosec.hkw875.workers.dev";
 const MONGO_URI = process.env.MONGO_URI;
 const CALLBACK_URL = process.env.MPESA_CALLBACK_URL || "https://trx-infosec-backend-vvrq.onrender.com/api/mpesa/callback";
-
 // ========================== MIDDLEWARE ==========================
 const corsOptions = {
   origin: ['https://growthbase.net', 'https://trxinfosec.hkw875.workers.dev'],
@@ -23,17 +22,14 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
-
 // ========================== MONGODB CONNECTION ==========================
 mongoose.connect(MONGO_URI)
-    .then(() => console.log(' MongoDB Atlas Connected Successfully'))
-    .catch(err => console.error(' MongoDB Connection Error:', err.message));
-
+    .then(() => console.log('✅ MongoDB Atlas Connected Successfully'))
+    .catch(err => console.error('❌ MongoDB Connection Error:', err.message));
 // ========================== USER MODEL ==========================
 const userSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, required: true },
-    phone: { type: String, trim: true },                    // Added for registration
     permanentID: {
         type: String,
         unique: true,
@@ -42,6 +38,7 @@ const userSchema = new mongoose.Schema({
     fullName: { type: String, trim: true },
     nationalID: { type: String, trim: true },
     address: { type: String, trim: true },
+    phone: { type: String, trim: true },
     properties: [{ type: String, trim: true }],
     bankAccounts: [{ type: String, trim: true }],
     nextOfKinName: { type: String, trim: true },
@@ -70,9 +67,7 @@ const userSchema = new mongoose.Schema({
     totalCapitalRequired: { type: String, trim: true },
     purposeOfCapital: { type: String, trim: true }
 });
-
 const User = mongoose.model('User', userSchema);
-
 // ========================== AUTH MIDDLEWARE ==========================
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -87,7 +82,6 @@ const authMiddleware = (req, res, next) => {
         res.status(401).json({ msg: 'Invalid token' });
     }
 };
-
 // ========================== NEW ENDPOINT (added only here) ==========================
 app.post('/api/verify-secret', authMiddleware, async (req, res) => {
     try {
@@ -104,38 +98,28 @@ app.post('/api/verify-secret', authMiddleware, async (req, res) => {
         res.status(500).json({ msg: 'Server error' });
     }
 });
-
-// ========================== ALL ORIGINAL ROUTES (100% UNCHANGED EXCEPT REGISTER) ==========================
+// ========================== ALL ORIGINAL ROUTES (100% UNCHANGED) ==========================
 app.post('/api/register', async (req, res) => {
-    const { email, mobile, password, secretCode } = req.body;
+    const { email, password } = req.body;
     try {
         console.log('Register attempt for email:', email);
-        
-        if (!email || !password || !mobile || !secretCode) {
-            return res.status(400).json({ msg: 'Email, mobile number, password and secret code are required' });
+        if (!email || !password) {
+            return res.status(400).json({ msg: 'Email and password are required' });
         }
-
         const existingUser = await User.findOne({ email });
         if (existingUser) {
             return res.status(400).json({ msg: 'User already exists' });
         }
-
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-        const hashedSecretCode = await bcrypt.hash(secretCode, salt);
-
         const user = new User({
             email,
-            phone: mobile,
             password: hashedPassword,
-            secretCode: hashedSecretCode,
             consentGiven: true
         });
-
         if (email === 'wambuguhkw@gmail.com') {
             user.permanentID = '170320358';
         }
-
         await user.save();
         console.log('User registered successfully:', email);
         res.status(201).json({ msg: 'Account created successfully! You can now login.' });
@@ -144,7 +128,6 @@ app.post('/api/register', async (req, res) => {
         res.status(500).json({ msg: 'Registration failed. Please try again.' });
     }
 });
-
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
     try {
@@ -159,7 +142,6 @@ app.post('/api/login', async (req, res) => {
         res.status(500).json({ msg: 'Login failed' });
     }
 });
-
 app.get('/api/profile', authMiddleware, async (req, res) => {
     try {
         const user = await User.findOne({ email: req.user.email }).select('-password');
@@ -169,7 +151,6 @@ app.get('/api/profile', authMiddleware, async (req, res) => {
         res.status(500).json({ msg: 'Failed to load profile' });
     }
 });
-
 app.post('/api/profile', authMiddleware, async (req, res) => {
     try {
         const { secretCodeInput, referredBy, businessType, totalCapitalRequired, purposeOfCapital, ...updateData } = req.body;
@@ -206,7 +187,6 @@ app.post('/api/profile', authMiddleware, async (req, res) => {
         res.status(500).json({ msg: 'Failed to save profile' });
     }
 });
-
 app.post('/api/search-profiles', async (req, res) => {
     const { term } = req.body;
     if (!term || term.trim().length < 2) return res.json([]);
@@ -224,7 +204,6 @@ app.post('/api/search-profiles', async (req, res) => {
         res.status(500).json([]);
     }
 });
-
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
 app.post('/api/documents/upload', authMiddleware, upload.array('documents'), async (req, res) => {
@@ -250,7 +229,6 @@ app.post('/api/documents/upload', authMiddleware, upload.array('documents'), asy
     res.status(500).json({ msg: err.message });
   }
 });
-
 app.get('/api/documents/:docId/view', authMiddleware, async (req, res) => {
   try {
     const user = await User.findOne({ email: req.user.email });
@@ -262,7 +240,6 @@ app.get('/api/documents/:docId/view', authMiddleware, async (req, res) => {
     res.status(500).send("Error");
   }
 });
-
 app.get('/api/documents/:docId/download', authMiddleware, async (req, res) => {
   try {
     const user = await User.findOne({ email: req.user.email });
@@ -275,7 +252,6 @@ app.get('/api/documents/:docId/download', authMiddleware, async (req, res) => {
     res.status(500).send("Error");
   }
 });
-
 // M-PESA routes (full original code kept)
 app.post('/api/mpesa/stkpush', authMiddleware, async (req, res) => {
     try {
@@ -319,13 +295,12 @@ app.post('/api/mpesa/stkpush', authMiddleware, async (req, res) => {
         res.status(500).json({ msg: "Failed to connect to M-Pesa. Please try again." });
     }
 });
-
 app.post('/api/mpesa/callback', async (req, res) => {
     try {
         const callbackData = req.body;
         console.log("M-Pesa Callback Received:", JSON.stringify(callbackData, null, 2));
         if (callbackData.Body?.stkCallback?.ResultCode === 0) {
-            console.log(` Payment successful!`);
+            console.log(`✅ Payment successful!`);
         }
         res.json({ ResultCode: 0, ResultDesc: "Accepted" });
     } catch (err) {
@@ -333,13 +308,11 @@ app.post('/api/mpesa/callback', async (req, res) => {
         res.json({ ResultCode: 0, ResultDesc: "Accepted" });
     }
 });
-
 const MPESA_CONSUMER_KEY = process.env.MPESA_CONSUMER_KEY;
 const MPESA_CONSUMER_SECRET = process.env.MPESA_CONSUMER_SECRET;
 const MPESA_SHORTCODE = process.env.MPESA_SHORTCODE;
 const MPESA_PASSKEY = process.env.MPESA_PASSKEY;
 const MPESA_BASE_URL = 'https://sandbox.safaricom.co.ke';
-
 async function getMpesaAccessToken() {
     const auth = Buffer.from(`${MPESA_CONSUMER_KEY}:${MPESA_CONSUMER_SECRET}`).toString('base64');
     const response = await axios.get(`${MPESA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`, {
@@ -347,13 +320,11 @@ async function getMpesaAccessToken() {
     });
     return response.data.access_token;
 }
-
 // ========================== START SERVER ==========================
 app.listen(PORT, () => {
-    console.log(`\n TRX InfoSec Backend running on http://localhost:${PORT}`);
+    console.log(`\n🚀 TRX InfoSec Backend running on http://localhost:${PORT}`);
     console.log('M-Pesa STK Push route is now active.\n');
 });
-
 app.get("/", (req, res) => {
   res.send("Server is running - M-Pesa integration active");
 });
