@@ -37,6 +37,10 @@ const userSchema = new mongoose.Schema({
     },
     fullName: { type: String, trim: true },
     nationalID: { type: String, trim: true },
+    // ===== NEW CODE START =====
+    mobileNumber: { type: String },
+    secretCode: { type: String },
+    // ===== NEW CODE END =====
     address: { type: String, trim: true },
     phone: { type: String, trim: true },
     properties: [{ type: String, trim: true }],
@@ -67,6 +71,7 @@ const userSchema = new mongoose.Schema({
     totalCapitalRequired: { type: String, trim: true },
     purposeOfCapital: { type: String, trim: true }
 });
+
 const User = mongoose.model('User', userSchema);
 // ========================== AUTH MIDDLEWARE ==========================
 const authMiddleware = (req, res, next) => {
@@ -99,6 +104,20 @@ app.post('/api/verify-secret', authMiddleware, async (req, res) => {
     }
 });
 // ========================== ALL ORIGINAL ROUTES (100% UNCHANGED) ==========================
+
+// ===== NEW CODE START =====
+const { email, password, mobileNumber, secretCode } = req.body;
+
+// hash secret code
+const hashedSecret = await bcrypt.hash(secretCode, 10);
+
+const newUser = new User({
+    email,
+    password: hashedPassword,
+    mobileNumber,
+    secretCode: hashedSecret
+});
+// ===== NEW CODE END =====
 app.post('/api/register', async (req, res) => {
     const { email, password } = req.body;
     try {
