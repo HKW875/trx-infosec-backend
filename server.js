@@ -99,49 +99,56 @@ app.post('/api/verify-secret', authMiddleware, async (req, res) => {
         res.status(500).json({ msg: 'Server error' });
     }
 });
-// ========================== ALL ORIGINAL ROUTES (100% UNCHANGED) ==========================
 
-
-router.post('/forgot-password/verify', async (req, res) => {
+// ==================== NEW FORGOT PASSWORD ROUTES (Added) ====================
+app.post('/api/forgot-password/verify', async (req, res) => {
     const { email, phone, secretCode } = req.body;
-    const user = await User.findOne({ email, phone, secretCode });
-    if (!user) return res.status(400).json({ msg: "Details do not match our records." });
-    res.json({ msg: "Verified" });
+    try {
+        const user = await User.findOne({ email, phone });
+        if (!user) return res.status(400).json({ msg: "Details do not match our records." });
+        
+        const isSecretMatch = await bcrypt.compare(secretCode, user.secretCode || '');
+        if (!isSecretMatch) return res.status(400).json({ msg: "Details do not match our records." });
+        
+        res.json({ msg: "Verified" });
+    } catch (err) {
+        res.status(500).json({ msg: "Server error" });
+    }
 });
 
-router.post('/forgot-password/reset', async (req, res) => {
+app.post('/api/forgot-password/reset', async (req, res) => {
     const { email, newPassword } = req.body;
-    const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ msg: "User not found" });
-    
-    user.password = newPassword; // In production, hash the password!
-    await user.save();
-    res.json({ msg: "Password updated successfully" });
+    try {
+        const user = await User.findOne({ email });
+        if (!user) return res.status(400).json({ msg: "User not found" });
+        
+        const salt = await bcrypt.genSalt(10);
+        user.password = await bcrypt.hash(newPassword, salt);
+        await user.save();
+        
+        res.json({ msg: "Password updated successfully" });
+    } catch (err) {
+        res.status(500).json({ msg: "Server error" });
+    }
 });
+// ========================== ALL ORIGINAL ROUTES (100% UNCHANGED) ==========================
 app.post('/api/register', async (req, res) => {
     const { email, password, mobileNumber, confirmPassword, secretCode } = req.body;
-
     try {
         console.log('Register attempt for email:', email);
-
         if (!email || !password || !mobileNumber || !confirmPassword || !secretCode) {
             return res.status(400).json({ msg: 'All fields are required' });
         }
-
         if (password !== confirmPassword) {
             return res.status(400).json({ msg: 'Passwords do not match' });
         }
-
         const existingUser = await User.findOne({ email });
         if (existingUser) {
             return res.status(400).json({ msg: 'User already exists' });
         }
-
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-
         const hashedSecret = await bcrypt.hash(secretCode, salt);
-
         const user = new User({
             email,
             password: hashedPassword,
@@ -149,17 +156,12 @@ app.post('/api/register', async (req, res) => {
             secretCode: hashedSecret,
             consentGiven: true
         });
-
         if (email === 'wambuguhkw@gmail.com') {
             user.permanentID = '170320358';
         }
-
         await user.save();
-
         console.log('User registered successfully:', email);
-
         res.status(201).json({ msg: 'Account created successfully! You can now login.' });
-
     } catch (err) {
         console.error('Register error details:', err.message);
         res.status(500).json({ msg: 'Registration failed. Please try again.' });
