@@ -100,6 +100,24 @@ app.post('/api/verify-secret', authMiddleware, async (req, res) => {
     }
 });
 // ========================== ALL ORIGINAL ROUTES (100% UNCHANGED) ==========================
+
+
+router.post('/forgot-password/verify', async (req, res) => {
+    const { email, phone, secretCode } = req.body;
+    const user = await User.findOne({ email, phone, secretCode });
+    if (!user) return res.status(400).json({ msg: "Details do not match our records." });
+    res.json({ msg: "Verified" });
+});
+
+router.post('/forgot-password/reset', async (req, res) => {
+    const { email, newPassword } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ msg: "User not found" });
+    
+    user.password = newPassword; // In production, hash the password!
+    await user.save();
+    res.json({ msg: "Password updated successfully" });
+});
 app.post('/api/register', async (req, res) => {
     const { email, password, mobileNumber, confirmPassword, secretCode } = req.body;
 
