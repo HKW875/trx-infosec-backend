@@ -26,7 +26,8 @@ app.use(express.json({ limit: '10mb' }));
 mongoose.connect(MONGO_URI)
     .then(() => console.log('✅ MongoDB Atlas Connected Successfully'))
     .catch(err => console.error('❌ MongoDB Connection Error:', err.message));
-// ========================== USER MODEL ==========================
+
+// ========================== USER MODEL - UPDATED WITH NEW FIELDS ==========================
 const userSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, required: true },
@@ -66,8 +67,18 @@ const userSchema = new mongoose.Schema({
     referredBy: { type: String, trim: true },
     businessType: { type: String, trim: true },
     totalCapitalRequired: { type: String, trim: true },
-    purposeOfCapital: { type: String, trim: true }
+    purposeOfCapital: { type: String, trim: true },
+
+    // ==================== NEW FIELDS ADDED ====================
+    occupation: { type: String, trim: true, default: "Not Provided" },   // Occupation or Business
+    location: {
+        latitude: Number,
+        longitude: Number,
+        timestamp: { type: Date, default: Date.now }   // "Created at" for geolocation
+    }
+    // =========================================================
 });
+
 const User = mongoose.model('User', userSchema);
 // ========================== AUTH MIDDLEWARE ==========================
 const authMiddleware = (req, res, next) => {
@@ -99,38 +110,85 @@ app.post('/api/verify-secret', authMiddleware, async (req, res) => {
         res.status(500).json({ msg: 'Server error' });
     }
 });
-
 // ==================== NEW FORGOT PASSWORD ROUTES (Added) ====================
 app.post('/api/forgot-password/verify', async (req, res) => {
     const { email, phone, secretCode } = req.body;
     try {
         const user = await User.findOne({ email, phone });
         if (!user) return res.status(400).json({ msg: "Details do not match our records." });
-       
+      
         const isSecretMatch = await bcrypt.compare(secretCode, user.secretCode || '');
         if (!isSecretMatch) return res.status(400).json({ msg: "Details do not match our records." });
-       
+      
         res.json({ msg: "Verified" });
     } catch (err) {
         res.status(500).json({ msg: "Server error" });
     }
 });
-
 app.post('/api/forgot-password/reset', async (req, res) => {
     const { email, newPassword } = req.body;
     try {
         const user = await User.findOne({ email });
         if (!user) return res.status(400).json({ msg: "User not found" });
-       
+      
         const salt = await bcrypt.genSalt(10);
         user.password = await bcrypt.hash(newPassword, salt);
         await user.save();
-       
+      
         res.json({ msg: "Password updated successfully" });
     } catch (err) {
         res.status(500).json({ msg: "Server error" });
     }
 });
+
+// ==================== NEW: SAVE GEOLOCATION ENDPOINT ====================
+app.post('/api/save-location', authMiddleware, async (req, res) => {
+    try {
+        const { latitude, longitude, timestamp } = req.body;
+        const user = await User.findOne({ email: req.user.email });
+        if (!user) return res.status(404).json({ msg: "User not found" });
+
+        user.location = {
+            latitude,
+            longitude,
+            timestamp: timestamp || new Date()
+        };
+        await user.save();
+        res.json({ msg: "Geolocation saved successfully" });
+    } catch (err) {
+        res.status(500).json({ msg: "Server error" });
+    }
+});
+
+// ==================== NEW: OCCUPATION STATISTICS FOR PIE CHART ====================
+app.get('/api/occupations-stats', authMiddleware, async (req, res) => {
+    try {
+        const users = await User.find({ occupation: { $exists: true } }).select('occupation');
+        
+        const occupationCount = {};
+        users.forEach(user => {
+            const occ = user.occupation && user.occupation.trim() !== "" 
+                        ? user.occupation.trim() 
+                        : "Not Provided";
+            occupationCount[occ] = (occupationCount[occ] || 0) + 1;
+        });
+
+        const totalUsers = users.length || 1;
+        const labels = Object.keys(occupationCount);
+        const percentages = labels.map(label => 
+            Math.round((occupationCount[label] / totalUsers) * 100 * 10) / 10
+        );
+
+        res.json({
+            labels: labels.length > 0 ? labels : ["No data yet"],
+            percentages: percentages.length > 0 ? percentages : [100],
+            counts: Object.values(occupationCount)
+        });
+    } catch (err) {
+        res.status(500).json({ msg: "Failed to generate statistics" });
+    }
+});
+
 // ========================== ALL ORIGINAL ROUTES (100% UNCHANGED) ==========================
 app.post('/api/register', async (req, res) => {
     const { email, password, mobileNumber, confirmPassword, secretCode } = req.body;
