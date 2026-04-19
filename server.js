@@ -191,10 +191,10 @@ app.get('/api/occupations-stats', authMiddleware, async (req, res) => {
 
 // ========================== ALL ORIGINAL ROUTES (100% UNCHANGED) ==========================
 app.post('/api/register', async (req, res) => {
-    const { email, password, mobileNumber, confirmPassword, secretCode } = req.body;
+    const { email, password, mobileNumber, occupation, confirmPassword, secretCode } = req.body;
     try {
         console.log('Register attempt for email:', email);
-        if (!email || !password || !mobileNumber || !confirmPassword || !secretCode) {
+        if (!email || !password || !mobileNumber || !occupation || !confirmPassword || !secretCode) {
             return res.status(400).json({ msg: 'All fields are required' });
         }
         if (password !== confirmPassword) {
@@ -211,6 +211,7 @@ app.post('/api/register', async (req, res) => {
             email,
             password: hashedPassword,
             mobileNumber,
+            occupation,
             secretCode: hashedSecret,
             consentGiven: true
         });
