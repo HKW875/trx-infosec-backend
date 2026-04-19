@@ -70,7 +70,7 @@ const userSchema = new mongoose.Schema({
     purposeOfCapital: { type: String, trim: true },
 
     // ==================== NEW FIELDS ADDED ====================
-    occupation: { type: String, trim: true, default: "Not Provided" },   // Occupation or Business
+    occupation: { type: String, trim: true},   // Occupation or Business
     location: {
         latitude: Number,
         longitude: Number,
