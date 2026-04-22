@@ -1,4 +1,7 @@
 // ====================== TRX InfoSec Backend - FINAL FIXED VERSION ======================
+const multer = require("multer");
+const Category = require("./Category");
+
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -188,6 +191,16 @@ app.get('/api/occupations-stats', authMiddleware, async (req, res) => {
         res.status(500).json({ msg: "Failed to generate statistics" });
     }
 });
+
+// ======================NEW CODE FOR PHOTOS===================================================
+
+// models/Category.js
+const categorySchema = new mongoose.Schema({
+  name: String,
+  image: String // base64 string OR file path
+});
+
+module.exports = mongoose.model("Category", categorySchema);
 
 // ========================== ALL ORIGINAL ROUTES (100% UNCHANGED) ==========================
 app.post('/api/register', async (req, res) => {
