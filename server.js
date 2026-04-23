@@ -1,7 +1,11 @@
 // ====================== TRX InfoSec Backend - FINAL FIXED VERSION ======================
 const multer = require("multer");
 const Category = require("./Category");
-
+const router = express.Router();
+const Advert = require('./models/Advert'); // Path to schema
+const path = require('path');
+const fs = require('fs');
+const upload = multer({ dest: 'uploads/ads/' });
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -23,6 +27,8 @@ const corsOptions = {
   credentials: true,
   maxAge: 86400
 };
+// This makes the 'uploads' folder public so the browser can see the images
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 // ========================== MONGODB CONNECTION ==========================
@@ -82,7 +88,92 @@ const userSchema = new mongoose.Schema({
     // =========================================================
 });
 
+
+const AdSchema = new mongoose.Schema({
+    category: String,
+    price: Number,
+    description: String,
+    locationName: String,
+    phone: String,
+    condition: { type: String, enum: ['new', 'used'] },
+    images: [String], // Array of image URLs/Paths
+    geo: {
+        lat: Number,
+        lng: Number
+    },
+    createdAt: { type: Date, default: Date.now }
+});
+
+module.exports = mongoose.model('Advert', AdSchema);
+
 const User = mongoose.model('User', userSchema);
+const upload = multer({ dest: 'uploads/ads/' });
+
+
+// Ensure the upload directory exists
+const uploadDir = './uploads/ads/';
+if (!fs.existsSync(uploadDir)){
+    fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'uploads/ads/'); // Where to save
+    },
+    filename: (req, file, cb) => {
+        // This renames the file to: "timestamp-originalname.jpg" 
+        // Example: "1625000000-mycar.jpg" to avoid name conflicts.
+        cb(null, Date.now() + '-' + file.originalname);
+    }
+});
+
+const upload = multer({ storage: storage });
+
+
+
+// 1. THE POST ROUTE: Receives the new Ad data
+app.post('/api/ads/create', upload.array('images', 5), async (req, res) => {
+    try {
+        // Collect the paths of the uploaded images
+        const imagePaths = req.files.map(file => '/uploads/ads/' + file.filename);
+
+        // Create a new entry in MongoDB using the Advert Schema
+        const newAd = new Advert({
+            category: req.body.category,
+            price: req.body.price,
+            description: req.body.description,
+            locationName: req.body.locationName,
+            phone: req.body.phone,
+            condition: req.body.condition,
+            images: imagePaths, // Save the array of image paths
+            geo: {
+                lat: parseFloat(req.body.lat),
+                lng: parseFloat(req.body.lng)
+            }
+        });
+
+        await newAd.save(); // Save to MongoDB
+        res.status(201).json({ success: true, message: 'Ad created successfully!' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// 2. THE GET ROUTE: Fetches ads when a user clicks a category
+app.get('/api/ads', async (req, res) => {
+    try {
+        const { category } = req.query;
+        // Find ads that match the clicked category, sorted by newest first
+        const ads = await Advert.find({ category: category }).sort({ createdAt: -1 });
+        res.json(ads);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch ads' });
+    }
+});
+
+module.exports = router;
+
 // ========================== AUTH MIDDLEWARE ==========================
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -97,6 +188,26 @@ const authMiddleware = (req, res, next) => {
         res.status(401).json({ msg: 'Invalid token' });
     }
 };
+
+
+
+
+router.post('/create', upload.array('images', 5), async (req, res) => {
+    try {
+        const imagePaths = req.files.map(f => f.path);
+        const newAd = new Advert({
+            ...req.body,
+            images: imagePaths,
+            geo: { lat: req.body.lat, lng: req.body.lng }
+        });
+        await newAd.save();
+        res.status(201).json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+module.exports = router;
 // ========================== NEW ENDPOINT (added only here) ==========================
 app.post('/api/verify-secret', authMiddleware, async (req, res) => {
     try {
