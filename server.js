@@ -1,4 +1,6 @@
 // ====================== TRX InfoSec Backend - FINAL FIXED VERSION ======================
+const express = require('express');  // ✅ define first
+const app = express();               // ✅ then use it
 const multer = require("multer");
 const Category = require("./Category");
 const router = express.Router();
@@ -7,13 +9,13 @@ const path = require('path');
 const fs = require('fs');
 const upload = multer({ dest: 'uploads/ads/' });
 require('dotenv').config();
-const express = require('express');
+
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const axios = require('axios');
-const app = express();
+
 const PORT = process.env.PORT || 10000;
 const JWT_SECRET = 'trx-infosec-secure-jwt-key-2026-change-in-production';
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://trxinfosec.hkw875.workers.dev";
