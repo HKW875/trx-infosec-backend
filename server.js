@@ -107,7 +107,7 @@ const AdSchema = new mongoose.Schema({
 module.exports = mongoose.model('Advert', AdSchema);
 
 const User = mongoose.model('User', userSchema);
-const upload = multer({ dest: 'uploads/ads/' });
+
 
 
 // Ensure the upload directory exists
