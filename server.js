@@ -427,7 +427,7 @@ app.post('/api/search-profiles', async (req, res) => {
     }
 });
 
-const upload = multer({ storage: multer.memoryStorage() });
+
 app.post('/api/documents/upload', authMiddleware, upload.array('documents'), async (req, res) => {
   try {
     const documentNames = req.body.documentNames;
