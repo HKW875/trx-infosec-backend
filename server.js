@@ -1,6 +1,9 @@
 // ====================== TRX InfoSec Backend - FINAL FIXED VERSION ======================
 const express = require('express');  // ✅ define first
 const app = express();               // ✅ then use it
+const response = await fetch('/api/ads');
+const result = await response.text();
+console.log(result);
 const multer = require("multer");
 const Category = require("./Category");
 const router = express.Router();
