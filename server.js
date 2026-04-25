@@ -204,24 +204,6 @@ const authMiddleware = (req, res, next) => {
     }
 };
 
-
-
-
-router.post('/create', upload.array('images', 5), async (req, res) => {
-    try {
-        const imagePaths = req.files.map(f => f.path);
-        const newAd = new Advert({
-            ...req.body,
-            images: imagePaths,
-            geo: { lat: req.body.lat, lng: req.body.lng }
-        });
-        await newAd.save();
-        res.status(201).json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
 module.exports = router;
 // ========================== NEW ENDPOINT (added only here) ==========================
 app.post('/api/verify-secret', authMiddleware, async (req, res) => {
