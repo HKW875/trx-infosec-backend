@@ -22,13 +22,6 @@ const FRONTEND_URL = process.env.FRONTEND_URL || "https://trxinfosec.hkw875.work
 const MONGO_URI = process.env.MONGO_URI;
 const CALLBACK_URL = process.env.MPESA_CALLBACK_URL || "https://trx-infosec-backend-vvrq.onrender.com/api/mpesa/callback";
 
-async function fetchAds() {
-    const response = await fetch('/api/ads');
-    const result = await response.text();
-    console.log(result);
-}
-
-fetchAds();
 // ========================== MIDDLEWARE ==========================
 const corsOptions = {
   origin: ['https://growthbase.net', 'https://trxinfosec.hkw875.workers.dev'],
