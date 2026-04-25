@@ -204,7 +204,7 @@ const authMiddleware = (req, res, next) => {
     }
 };
 
-module.exports = router;
+
 // ========================== NEW ENDPOINT (added only here) ==========================
 app.post('/api/verify-secret', authMiddleware, async (req, res) => {
     try {
