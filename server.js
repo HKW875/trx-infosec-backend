@@ -172,7 +172,7 @@ app.get('/api/ads', async (req, res) => {
         // Find ads that match the clicked category, sorted by newest first
         const ads = await Advert.find({ category: category }).sort({ createdAt: -1 });
         
-        let ads;
+    
 
         if (category) {
             ads = await Advert.find({ category }).sort({ createdAt: -1 });
