@@ -1,9 +1,6 @@
 // ====================== TRX InfoSec Backend - FINAL FIXED VERSION ======================
 const express = require('express');  // ✅ define first
 const app = express();               // ✅ then use it
-const response = await fetch('/api/ads');
-const result = await response.text();
-console.log(result);
 const multer = require("multer");
 const Category = require("./Category");
 const router = express.Router();
@@ -24,6 +21,14 @@ const JWT_SECRET = 'trx-infosec-secure-jwt-key-2026-change-in-production';
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://trxinfosec.hkw875.workers.dev";
 const MONGO_URI = process.env.MONGO_URI;
 const CALLBACK_URL = process.env.MPESA_CALLBACK_URL || "https://trx-infosec-backend-vvrq.onrender.com/api/mpesa/callback";
+
+async function fetchAds() {
+    const response = await fetch('/api/ads');
+    const result = await response.text();
+    console.log(result);
+}
+
+fetchAds();
 // ========================== MIDDLEWARE ==========================
 const corsOptions = {
   origin: ['https://growthbase.net', 'https://trxinfosec.hkw875.workers.dev'],
