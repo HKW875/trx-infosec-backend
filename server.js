@@ -169,7 +169,17 @@ app.get('/api/ads', async (req, res) => {
         const { category } = req.query;
         // Find ads that match the clicked category, sorted by newest first
         const ads = await Advert.find({ category: category }).sort({ createdAt: -1 });
-        res.json(ads);
+        
+        let ads;
+
+        if (category) {
+            ads = await Advert.find({ category }).sort({ createdAt: -1 });
+        } else {
+            ads = await Advert.find().sort({ createdAt: -1 });
+        }
+      
+        res.json({ data: ads });
+      
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch ads' });
     }
