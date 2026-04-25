@@ -3,11 +3,11 @@ const express = require('express');  // ✅ define first
 const app = express();               // ✅ then use it
 const multer = require("multer");
 const Category = require("./Category");
-const router = express.Router();
+
 const Advert = require('./models/Advert'); // Path to schema
 const path = require('path');
 const fs = require('fs');
-const upload = multer({ dest: 'uploads/ads/' });
+const upload = multer({ storage });
 require('dotenv').config();
 
 const mongoose = require('mongoose');
@@ -187,7 +187,7 @@ app.get('/api/ads', async (req, res) => {
     }
 });
 
-module.exports = router;
+
 
 // ========================== AUTH MIDDLEWARE ==========================
 const authMiddleware = (req, res, next) => {
