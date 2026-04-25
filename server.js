@@ -7,7 +7,7 @@ const Category = require("./Category");
 const Advert = require('./models/Advert'); // Path to schema
 const path = require('path');
 const fs = require('fs');
-const upload = multer({ storage });
+
 require('dotenv').config();
 
 const mongoose = require('mongoose');
@@ -132,7 +132,7 @@ const storage = multer.diskStorage({
 });
 
 
-
+const upload = multer({ storage });
 
 
 // 1. THE POST ROUTE: Receives the new Ad data
