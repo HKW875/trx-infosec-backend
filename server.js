@@ -94,6 +94,7 @@ const userSchema = new mongoose.Schema({
 
 const AdSchema = new mongoose.Schema({
     category: String,
+    title: String,
     price: Number,
     description: String,
     locationName: String,
@@ -143,6 +144,7 @@ app.post('/api/ads/create', upload.array('images', 5), async (req, res) => {
         // Create a new entry in MongoDB using the Advert Schema
         const newAd = new Advert({
             category: req.body.category,
+            title: req.body.title,
             price: req.body.price,
             description: req.body.description,
             locationName: req.body.locationName,
