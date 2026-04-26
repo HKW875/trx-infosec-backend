@@ -140,7 +140,7 @@ app.post('/api/ads/create', upload.array('images', 5), async (req, res) => {
             description: req.body.description,
             locationName: req.body.locationName,
             phone: req.body.phone,
-            condition: req.body.condition,
+            condition: req.body.condition?.toLowerCase(),
             images: imagePaths, // Save the array of image paths
             geo: {
                 lat: req.body.lat ? parseFloat(req.body.lat) : null,
