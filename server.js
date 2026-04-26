@@ -4,7 +4,7 @@ const app = express();               // ✅ then use it
 const multer = require("multer");
 const Category = require("./Category");
 
-const Advert = require('./models/Advert'); // Path to schema
+const Advert = require('./models/Advert');
 const path = require('path');
 const fs = require('fs');
 
@@ -92,23 +92,7 @@ const userSchema = new mongoose.Schema({
 });
 
 
-const AdSchema = new mongoose.Schema({
-    category: String,
-    title: String,
-    price: Number,
-    description: String,
-    locationName: String,
-    phone: String,
-    condition: { type: String, enum: ['new', 'used'] },
-    images: [String], // Array of image URLs/Paths
-    geo: {
-        lat: Number,
-        lng: Number
-    },
-    createdAt: { type: Date, default: Date.now }
-});
 
-module.exports = mongoose.model('Advert', AdSchema);
 
 const User = mongoose.model('User', userSchema);
 
