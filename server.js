@@ -1,10 +1,7 @@
-// ====================== TRX InfoSec Backend - FINAL FIXED VERSION ======================
-const express = require('express');  // ✅ define first
-const app = express();               // ✅ then use it
+// ====================== TRX InfoSec Backend - FULLY CORRECTED VERSION ======================
+const express = require('express');
+const app = express();
 const multer = require("multer");
-const Category = require("./Category");
-
-const Advert = require('./models/Advert');
 const path = require('path');
 const fs = require('fs');
 
@@ -24,22 +21,24 @@ const CALLBACK_URL = process.env.MPESA_CALLBACK_URL || "https://trx-infosec-back
 
 // ========================== MIDDLEWARE ==========================
 const corsOptions = {
-  origin: ['https://growthbase.net', 'https://trxinfosec.hkw875.workers.dev'], 
+  origin: ['https://growthbase.net', 'https://trxinfosec.hkw875.workers.dev'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   credentials: true,
   maxAge: 86400
 };
+
 // This makes the 'uploads' folder public so the browser can see the images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
+
 // ========================== MONGODB CONNECTION ==========================
 mongoose.connect(MONGO_URI)
     .then(() => console.log('✅ MongoDB Atlas Connected Successfully'))
     .catch(err => console.error('❌ MongoDB Connection Error:', err.message));
 
-// ========================== USER MODEL - UPDATED WITH NEW FIELDS ==========================
+// ========================== USER MODEL ==========================
 const userSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, required: true },
@@ -80,59 +79,86 @@ const userSchema = new mongoose.Schema({
     businessType: { type: String, trim: true },
     totalCapitalRequired: { type: String, trim: true },
     purposeOfCapital: { type: String, trim: true },
-
-    // ==================== NEW FIELDS ADDED ====================
-    occupation: { type: String, trim: true},   // Occupation or Business
+    occupation: { type: String, trim: true },
     location: {
         latitude: Number,
         longitude: Number,
-        timestamp: { type: Date, default: Date.now }   // "Created at" for geolocation
+        timestamp: { type: Date, default: Date.now }
     }
-    // =========================================================
 });
-
-
-
 
 const User = mongoose.model('User', userSchema);
 
+// ========================== ADVERT MODEL ==========================
+// FIX: Advert model defined inline — no separate file dependency needed here.
+// If you have a separate models/Advert.js file, keep using that and remove this block.
+// Only define it here if models/Advert.js does not exist.
+let Advert;
+try {
+    Advert = mongoose.model('Advert');
+} catch (e) {
+    const advertSchema = new mongoose.Schema({
+        category: { type: String, trim: true },
+        title: { type: String, trim: true },
+        price: { type: String, trim: true },
+        description: { type: String, trim: true },
+        locationName: { type: String, trim: true },
+        phone: { type: String, trim: true },
+        condition: { type: String, trim: true },
+        images: [{ type: String }],
+        geo: {
+            lat: { type: Number, default: null },
+            lng: { type: Number, default: null }
+        },
+        createdAt: { type: Date, default: Date.now }
+    });
+    Advert = mongoose.model('Advert', advertSchema);
+}
 
+// ========================== CATEGORY MODEL ==========================
+// FIX: Category model defined ONCE here — removed the duplicate definition
+// that was incorrectly placed inside the route section and caused a server crash.
+let Category;
+try {
+    Category = mongoose.model('Category');
+} catch (e) {
+    const categorySchema = new mongoose.Schema({
+        name: String,
+        image: String // base64 string OR file path
+    });
+    Category = mongoose.model('Category', categorySchema);
+}
 
+// ========================== MULTER SETUP ==========================
 // Ensure the upload directory exists
 const uploadDir = './uploads/ads/';
-if (!fs.existsSync(uploadDir)){
+if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
 }
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, 'uploads/ads/'); // Where to save
+        cb(null, 'uploads/ads/');
     },
     filename: (req, file, cb) => {
-        // This renames the file to: "timestamp-originalname.jpg" 
-        // Example: "1625000000-mycar.jpg" to avoid name conflicts.
         cb(null, Date.now() + '-' + file.originalname);
     }
 });
 
-
 const upload = multer({ storage });
 
+// ========================== ADS ROUTES ==========================
 
-// 1. THE POST ROUTE: Receives the new Ad data
+// POST: Create a new Ad
 app.post('/api/ads/create', upload.array('images', 5), async (req, res) => {
     try {
-
-        // 🔍 DEBUG LOGS (add here)
         console.log("BODY:", req.body);
         console.log("FILES:", req.files);
-      
-        // Collect the paths of the uploaded images
+
         const imagePaths = (req.files || []).map(file =>
             '/uploads/ads/' + file.filename
-        );;
+        );
 
-        // Create a new entry in MongoDB using the Advert Schema
         const newAd = new Advert({
             category: req.body.category,
             title: req.body.title,
@@ -141,21 +167,20 @@ app.post('/api/ads/create', upload.array('images', 5), async (req, res) => {
             locationName: req.body.locationName,
             phone: req.body.phone,
             condition: req.body.condition?.toLowerCase(),
-            images: imagePaths, // Save the array of image paths
+            images: imagePaths,
             geo: {
                 lat: req.body.lat ? parseFloat(req.body.lat) : null,
                 lng: req.body.lng ? parseFloat(req.body.lng) : null
             }
         });
 
-        await newAd.save(); // Save to MongoDB
+        await newAd.save();
         return res.status(201).json({
             success: true,
             message: 'Ad created successfully!'
         });
     } catch (error) {
         console.error("CREATE AD ERROR:", error);
-
         return res.status(500).json({
             success: false,
             message: "Server error"
@@ -163,7 +188,7 @@ app.post('/api/ads/create', upload.array('images', 5), async (req, res) => {
     }
 });
 
-// 2. THE GET ROUTE: Fetches ads when a user clicks a category
+// GET: Fetch ads (optionally filtered by category)
 app.get('/api/ads', async (req, res) => {
     try {
         const { category } = req.query;
@@ -176,13 +201,10 @@ app.get('/api/ads', async (req, res) => {
         }
 
         res.json({ data: ads });
-      
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch ads' });
     }
 });
-
-
 
 // ========================== AUTH MIDDLEWARE ==========================
 const authMiddleware = (req, res, next) => {
@@ -199,8 +221,7 @@ const authMiddleware = (req, res, next) => {
     }
 };
 
-
-// ========================== NEW ENDPOINT (added only here) ==========================
+// ========================== SECRET CODE VERIFY ==========================
 app.post('/api/verify-secret', authMiddleware, async (req, res) => {
     try {
         const { secretCode } = req.body;
@@ -216,44 +237,41 @@ app.post('/api/verify-secret', authMiddleware, async (req, res) => {
         res.status(500).json({ msg: 'Server error' });
     }
 });
-// ==================== NEW FORGOT PASSWORD ROUTES (Added) ====================
+
+// ========================== FORGOT PASSWORD ROUTES ==========================
 app.post('/api/forgot-password/verify', async (req, res) => {
     const { email, phone, secretCode } = req.body;
     try {
         const user = await User.findOne({ email, phone });
         if (!user) return res.status(400).json({ msg: "Details do not match our records." });
-     
         const isSecretMatch = await bcrypt.compare(secretCode, user.secretCode || '');
         if (!isSecretMatch) return res.status(400).json({ msg: "Details do not match our records." });
-     
         res.json({ msg: "Verified" });
     } catch (err) {
         res.status(500).json({ msg: "Server error" });
     }
 });
+
 app.post('/api/forgot-password/reset', async (req, res) => {
     const { email, newPassword } = req.body;
     try {
         const user = await User.findOne({ email });
         if (!user) return res.status(400).json({ msg: "User not found" });
-     
         const salt = await bcrypt.genSalt(10);
         user.password = await bcrypt.hash(newPassword, salt);
         await user.save();
-     
         res.json({ msg: "Password updated successfully" });
     } catch (err) {
         res.status(500).json({ msg: "Server error" });
     }
 });
 
-// ==================== NEW: SAVE GEOLOCATION ENDPOINT ====================
+// ========================== GEOLOCATION ==========================
 app.post('/api/save-location', authMiddleware, async (req, res) => {
     try {
         const { latitude, longitude, timestamp } = req.body;
         const user = await User.findOne({ email: req.user.email });
         if (!user) return res.status(404).json({ msg: "User not found" });
-
         user.location = {
             latitude,
             longitude,
@@ -266,25 +284,22 @@ app.post('/api/save-location', authMiddleware, async (req, res) => {
     }
 });
 
-// ==================== NEW: OCCUPATION STATISTICS FOR PIE CHART ====================
+// ========================== OCCUPATION STATS ==========================
 app.get('/api/occupations-stats', authMiddleware, async (req, res) => {
     try {
         const users = await User.find({ occupation: { $exists: true } }).select('occupation');
-       
         const occupationCount = {};
         users.forEach(user => {
             const occ = user.occupation && user.occupation.trim() !== ""
-                        ? user.occupation.trim()
-                        : "Not Provided";
+                ? user.occupation.trim()
+                : "Not Provided";
             occupationCount[occ] = (occupationCount[occ] || 0) + 1;
         });
-
         const totalUsers = users.length || 1;
         const labels = Object.keys(occupationCount);
         const percentages = labels.map(label =>
             Math.round((occupationCount[label] / totalUsers) * 100 * 10) / 10
         );
-
         res.json({
             labels: labels.length > 0 ? labels : ["No data yet"],
             percentages: percentages.length > 0 ? percentages : [100],
@@ -295,17 +310,7 @@ app.get('/api/occupations-stats', authMiddleware, async (req, res) => {
     }
 });
 
-// ======================NEW CODE FOR PHOTOS===================================================
-
-// models/Category.js
-const categorySchema = new mongoose.Schema({
-  name: String,
-  image: String // base64 string OR file path
-});
-
-module.exports = mongoose.model("Category", categorySchema);
-
-// ========================== ALL ORIGINAL ROUTES (100% UNCHANGED) ==========================
+// ========================== AUTH ROUTES ==========================
 app.post('/api/register', async (req, res) => {
     const { email, password, mobileNumber, occupation, confirmPassword, secretCode } = req.body;
     try {
@@ -342,6 +347,7 @@ app.post('/api/register', async (req, res) => {
         res.status(500).json({ msg: 'Registration failed. Please try again.' });
     }
 });
+
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
     try {
@@ -356,6 +362,7 @@ app.post('/api/login', async (req, res) => {
         res.status(500).json({ msg: 'Login failed' });
     }
 });
+
 app.get('/api/profile', authMiddleware, async (req, res) => {
     try {
         const user = await User.findOne({ email: req.user.email }).select('-password');
@@ -365,6 +372,7 @@ app.get('/api/profile', authMiddleware, async (req, res) => {
         res.status(500).json({ msg: 'Failed to load profile' });
     }
 });
+
 app.post('/api/profile', authMiddleware, async (req, res) => {
     try {
         const { secretCodeInput, referredBy, businessType, totalCapitalRequired, purposeOfCapital, ...updateData } = req.body;
@@ -401,6 +409,7 @@ app.post('/api/profile', authMiddleware, async (req, res) => {
         res.status(500).json({ msg: 'Failed to save profile' });
     }
 });
+
 app.post('/api/search-profiles', async (req, res) => {
     const { term } = req.body;
     if (!term || term.trim().length < 2) return res.json([]);
@@ -419,54 +428,71 @@ app.post('/api/search-profiles', async (req, res) => {
     }
 });
 
-
+// ========================== DOCUMENT ROUTES ==========================
 app.post('/api/documents/upload', authMiddleware, upload.array('documents'), async (req, res) => {
-  try {
-    const documentNames = req.body.documentNames;
-    const files = req.files;
-    if (!files || files.length === 0) {
-      return res.status(400).json({ msg: "No files received" });
+    try {
+        const documentNames = req.body.documentNames;
+        const files = req.files;
+        if (!files || files.length === 0) {
+            return res.status(400).json({ msg: "No files received" });
+        }
+        const user = await User.findOne({ email: req.user.email });
+        if (!user) return res.status(404).json({ msg: "User not found" });
+        for (let i = 0; i < files.length; i++) {
+            user.documents.push({
+                name: Array.isArray(documentNames) ? documentNames[i] : documentNames,
+                filename: files[i].originalname,
+                contentType: files[i].mimetype,
+                data: files[i].buffer
+            });
+        }
+        await user.save();
+        res.json({ msg: "Documents saved successfully" });
+    } catch (err) {
+        res.status(500).json({ msg: err.message });
     }
-    const user = await User.findOne({ email: req.user.email });
-    if (!user) return res.status(404).json({ msg: "User not found" });
-    for (let i = 0; i < files.length; i++) {
-      user.documents.push({
-        name: Array.isArray(documentNames) ? documentNames[i] : documentNames,
-        filename: files[i].originalname,
-        contentType: files[i].mimetype,
-        data: files[i].buffer
-      });
-    }
-    await user.save();
-    res.json({ msg: "Documents saved successfully" });
-  } catch (err) {
-    res.status(500).json({ msg: err.message });
-  }
 });
+
 app.get('/api/documents/:docId/view', authMiddleware, async (req, res) => {
-  try {
-    const user = await User.findOne({ email: req.user.email });
-    const doc = user.documents.id(req.params.docId);
-    if (!doc) return res.status(404).send("Document not found");
-    res.set('Content-Type', doc.contentType);
-    res.send(doc.data);
-  } catch (err) {
-    res.status(500).send("Error");
-  }
+    try {
+        const user = await User.findOne({ email: req.user.email });
+        const doc = user.documents.id(req.params.docId);
+        if (!doc) return res.status(404).send("Document not found");
+        res.set('Content-Type', doc.contentType);
+        res.send(doc.data);
+    } catch (err) {
+        res.status(500).send("Error");
+    }
 });
+
 app.get('/api/documents/:docId/download', authMiddleware, async (req, res) => {
-  try {
-    const user = await User.findOne({ email: req.user.email });
-    const doc = user.documents.id(req.params.docId);
-    if (!doc) return res.status(404).send("Document not found");
-    res.set('Content-Type', doc.contentType);
-    res.set('Content-Disposition', `attachment; filename="${doc.filename}"`);
-    res.send(doc.data);
-  } catch (err) {
-    res.status(500).send("Error");
-  }
+    try {
+        const user = await User.findOne({ email: req.user.email });
+        const doc = user.documents.id(req.params.docId);
+        if (!doc) return res.status(404).send("Document not found");
+        res.set('Content-Type', doc.contentType);
+        res.set('Content-Disposition', `attachment; filename="${doc.filename}"`);
+        res.send(doc.data);
+    } catch (err) {
+        res.status(500).send("Error");
+    }
 });
-// M-PESA routes (full original code kept)
+
+// ========================== M-PESA ROUTES ==========================
+const MPESA_CONSUMER_KEY = process.env.MPESA_CONSUMER_KEY;
+const MPESA_CONSUMER_SECRET = process.env.MPESA_CONSUMER_SECRET;
+const MPESA_SHORTCODE = process.env.MPESA_SHORTCODE;
+const MPESA_PASSKEY = process.env.MPESA_PASSKEY;
+const MPESA_BASE_URL = 'https://sandbox.safaricom.co.ke';
+
+async function getMpesaAccessToken() {
+    const auth = Buffer.from(`${MPESA_CONSUMER_KEY}:${MPESA_CONSUMER_SECRET}`).toString('base64');
+    const response = await axios.get(`${MPESA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`, {
+        headers: { Authorization: `Basic ${auth}` }
+    });
+    return response.data.access_token;
+}
+
 app.post('/api/mpesa/stkpush', authMiddleware, async (req, res) => {
     try {
         const { phone, amount, planType, accountReference } = req.body;
@@ -509,6 +535,7 @@ app.post('/api/mpesa/stkpush', authMiddleware, async (req, res) => {
         res.status(500).json({ msg: "Failed to connect to M-Pesa. Please try again." });
     }
 });
+
 app.post('/api/mpesa/callback', async (req, res) => {
     try {
         const callbackData = req.body;
@@ -522,23 +549,14 @@ app.post('/api/mpesa/callback', async (req, res) => {
         res.json({ ResultCode: 0, ResultDesc: "Accepted" });
     }
 });
-const MPESA_CONSUMER_KEY = process.env.MPESA_CONSUMER_KEY;
-const MPESA_CONSUMER_SECRET = process.env.MPESA_CONSUMER_SECRET;
-const MPESA_SHORTCODE = process.env.MPESA_SHORTCODE;
-const MPESA_PASSKEY = process.env.MPESA_PASSKEY;
-const MPESA_BASE_URL = 'https://sandbox.safaricom.co.ke';
-async function getMpesaAccessToken() {
-    const auth = Buffer.from(`${MPESA_CONSUMER_KEY}:${MPESA_CONSUMER_SECRET}`).toString('base64');
-    const response = await axios.get(`${MPESA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`, {
-        headers: { Authorization: `Basic ${auth}` }
-    });
-    return response.data.access_token;
-}
+
+// ========================== ROOT ROUTE ==========================
+app.get("/", (req, res) => {
+    res.send("Server is running - M-Pesa integration active");
+});
+
 // ========================== START SERVER ==========================
 app.listen(PORT, () => {
     console.log(`\n🚀 TRX InfoSec Backend running on http://localhost:${PORT}`);
     console.log('M-Pesa STK Push route is now active.\n');
-});
-app.get("/", (req, res) => {
-  res.send("Server is running - M-Pesa integration active");
 });
