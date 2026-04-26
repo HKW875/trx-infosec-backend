@@ -130,7 +130,9 @@ app.post('/api/ads/create', upload.array('images', 5), async (req, res) => {
         console.log("FILES:", req.files);
       
         // Collect the paths of the uploaded images
-        const imagePaths = (req.files || []).map(file => '/uploads/ads/' + file.filename);
+        const imagePaths = (req.files || []).map(file =>
+            '/uploads/ads/' + file.filename
+        );;
 
         // Create a new entry in MongoDB using the Advert Schema
         const newAd = new Advert({
@@ -143,16 +145,16 @@ app.post('/api/ads/create', upload.array('images', 5), async (req, res) => {
             condition: req.body.condition,
             images: imagePaths, // Save the array of image paths
             geo: {
-                lat: parseFloat(req.body.lat),
-                lng: parseFloat(req.body.lng)
+                lat: req.body.lat ? parseFloat(req.body.lat) : null,
+                lng: req.body.lng ? parseFloat(req.body.lng) : null
             }
         });
 
         await newAd.save(); // Save to MongoDB
         res.status(201).json({ success: true, message: 'Ad created successfully!' });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ success: false, message: 'Server error' });
+        console.error("CREATE AD ERROR:", error.message);
+        console.error(error); // FULL STACK TRACE
     }
 });
 
