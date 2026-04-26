@@ -24,7 +24,9 @@ const CALLBACK_URL = process.env.MPESA_CALLBACK_URL || "https://trx-infosec-back
 
 // ========================== MIDDLEWARE ==========================
 const corsOptions = {
-  origin: ['https://growthbase.net', 'https://trxinfosec.hkw875.workers.dev'],
+  //origin: ['https://growthbase.net', 'https://trxinfosec.hkw875.workers.dev'], (to be returned later for security reasons)
+  // for testing only
+  origin: '*', 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   credentials: true,
@@ -122,8 +124,13 @@ const upload = multer({ storage });
 // 1. THE POST ROUTE: Receives the new Ad data
 app.post('/api/ads/create', upload.array('images', 5), async (req, res) => {
     try {
+
+        // 🔍 DEBUG LOGS (add here)
+        console.log("BODY:", req.body);
+        console.log("FILES:", req.files);
+      
         // Collect the paths of the uploaded images
-        const imagePaths = req.files.map(file => '/uploads/ads/' + file.filename);
+        const imagePaths = (req.files || []).map(file => '/uploads/ads/' + file.filename);
 
         // Create a new entry in MongoDB using the Advert Schema
         const newAd = new Advert({
@@ -153,18 +160,17 @@ app.post('/api/ads/create', upload.array('images', 5), async (req, res) => {
 app.get('/api/ads', async (req, res) => {
     try {
         const { category } = req.query;
-        // Find ads that match the clicked category, sorted by newest first
-        const ads = await Advert.find({ category: category }).sort({ createdAt: -1 });
-        
-    
+        let ads;
 
         if (category) {
             ads = await Advert.find({ category }).sort({ createdAt: -1 });
         } else {
             ads = await Advert.find().sort({ createdAt: -1 });
         }
-      
+
         res.json({ data: ads });
+      
+                res.json({ data: ads });
       
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch ads' });
