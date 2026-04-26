@@ -149,10 +149,17 @@ app.post('/api/ads/create', upload.array('images', 5), async (req, res) => {
         });
 
         await newAd.save(); // Save to MongoDB
-        res.status(201).json({ success: true, message: 'Ad created successfully!' });
+        return res.status(201).json({
+            success: true,
+            message: 'Ad created successfully!'
+        });
     } catch (error) {
-        console.error("CREATE AD ERROR:", error.message);
-        console.error(error); // FULL STACK TRACE
+        console.error("CREATE AD ERROR:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error"
+        });
     }
 });
 
@@ -169,8 +176,6 @@ app.get('/api/ads', async (req, res) => {
         }
 
         res.json({ data: ads });
-      
-                res.json({ data: ads });
       
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch ads' });
