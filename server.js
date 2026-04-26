@@ -24,9 +24,7 @@ const CALLBACK_URL = process.env.MPESA_CALLBACK_URL || "https://trx-infosec-back
 
 // ========================== MIDDLEWARE ==========================
 const corsOptions = {
-  //origin: ['https://growthbase.net', 'https://trxinfosec.hkw875.workers.dev'], (to be returned later for security reasons)
-  // for testing only
-  origin: '*', 
+  origin: ['https://growthbase.net', 'https://trxinfosec.hkw875.workers.dev'], (to be returned later for security reasons)
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   credentials: true,
