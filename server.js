@@ -20,6 +20,7 @@ const MONGO_URI = process.env.MONGO_URI;
 const CALLBACK_URL = process.env.MPESA_CALLBACK_URL || "https://trx-infosec-backend-vvrq.onrender.com/api/mpesa/callback";
 
 // ========================== MIDDLEWARE ==========================
+app.use('/uploads', express.static('uploads'))
 const corsOptions = {
   origin: ['https://growthbase.net', 'https://trxinfosec.hkw875.workers.dev'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
