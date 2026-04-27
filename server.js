@@ -85,15 +85,21 @@ const userSchema = new mongoose.Schema({
         latitude: Number,
         longitude: Number,
         timestamp: { type: Date, default: Date.now }
-    }
+    },
+    // ===== MY GOAL: stored as array on user profile =====
+    goals: [{
+        product: { type: String, trim: true },
+        category: { type: String, trim: true },
+        budget: { type: String, trim: true },
+        desiredDate: { type: String, trim: true },
+        notifyMe: { type: String, trim: true, default: 'yes' },
+        createdAt: { type: Date, default: Date.now }
+    }]
 });
 
 const User = mongoose.model('User', userSchema);
 
 // ========================== ADVERT MODEL ==========================
-// FIX: Advert model defined inline — no separate file dependency needed here.
-// If you have a separate models/Advert.js file, keep using that and remove this block.
-// Only define it here if models/Advert.js does not exist.
 let Advert;
 try {
     Advert = mongoose.model('Advert');
@@ -117,8 +123,6 @@ try {
 }
 
 // ========================== CATEGORY MODEL ==========================
-// FIX: Category model defined ONCE here — removed the duplicate definition
-// that was incorrectly placed inside the route section and caused a server crash.
 let Category;
 try {
     Category = mongoose.model('Category');
@@ -128,6 +132,23 @@ try {
         image: String // base64 string OR file path
     });
     Category = mongoose.model('Category', categorySchema);
+}
+
+// ========================== GOAL MODEL (standalone, for unauthenticated goals) ==========================
+let Goal;
+try {
+    Goal = mongoose.model('Goal');
+} catch (e) {
+    const goalSchema = new mongoose.Schema({
+        product: { type: String, trim: true },
+        category: { type: String, trim: true },
+        budget: { type: String, trim: true },
+        desiredDate: { type: String, trim: true },
+        notifyMe: { type: String, trim: true, default: 'yes' },
+        userEmail: { type: String, trim: true, default: null }, // null = anonymous
+        createdAt: { type: Date, default: Date.now }
+    });
+    Goal = mongoose.model('Goal', goalSchema);
 }
 
 // ========================== MULTER SETUP ==========================
@@ -189,18 +210,38 @@ app.post('/api/ads/create', upload.array('images', 5), async (req, res) => {
     }
 });
 
-// GET: Fetch ads (optionally filtered by category)
+// GET: Fetch ads (optionally filtered by category and/or search term)
 app.get('/api/ads', async (req, res) => {
     try {
-        const { category } = req.query;
-        let ads;
+        const { category, search } = req.query;
+
+        let query = {};
 
         if (category) {
-            ads = await Advert.find({ category }).sort({ createdAt: -1 });
-        } else {
-            ads = await Advert.find().sort({ createdAt: -1 });
+            query.category = category;
         }
 
+        // Full-text style search across title, description, locationName, category
+        if (search) {
+            const regex = new RegExp(search, 'i');
+            const searchConditions = [
+                { title: regex },
+                { description: regex },
+                { locationName: regex },
+                { category: regex }
+            ];
+            if (category) {
+                // Combine category filter with search
+                query = {
+                    category: category,
+                    $or: searchConditions
+                };
+            } else {
+                query = { $or: searchConditions };
+            }
+        }
+
+        const ads = await Advert.find(query).sort({ createdAt: -1 });
         res.json({ data: ads });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch ads' });
@@ -221,6 +262,59 @@ const authMiddleware = (req, res, next) => {
         res.status(401).json({ msg: 'Invalid token' });
     }
 };
+
+// ========================== MY GOAL ROUTE ==========================
+// POST /api/goals — saves a user goal (authenticated saves to user profile, anonymous saves to Goal collection)
+app.post('/api/goals', async (req, res) => {
+    try {
+        const { product, category, budget, desiredDate, notifyMe } = req.body;
+
+        if (!product) {
+            return res.status(400).json({ msg: 'Product or service name is required.' });
+        }
+
+        const goalData = { product, category, budget, desiredDate, notifyMe: notifyMe || 'yes' };
+
+        // Check if request is authenticated
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            try {
+                const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+                const user = await User.findOne({ email: decoded.email });
+                if (user) {
+                    // Save goal to user's profile
+                    user.goals.push(goalData);
+                    await user.save();
+                    console.log(`✅ Goal saved to user profile: ${decoded.email}`);
+                    return res.status(201).json({ msg: 'Goal saved to your profile successfully.' });
+                }
+            } catch (tokenErr) {
+                // Token invalid — fall through to anonymous save
+            }
+        }
+
+        // Anonymous: save to standalone Goal collection
+        const newGoal = new Goal({ ...goalData, userEmail: null });
+        await newGoal.save();
+        console.log(`✅ Anonymous goal saved: ${product}`);
+        return res.status(201).json({ msg: 'Goal saved successfully.' });
+
+    } catch (err) {
+        console.error('Goal save error:', err);
+        res.status(500).json({ msg: 'Failed to save goal. Please try again.' });
+    }
+});
+
+// GET /api/goals — retrieve goals for authenticated user
+app.get('/api/goals', authMiddleware, async (req, res) => {
+    try {
+        const user = await User.findOne({ email: req.user.email }).select('goals');
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+        res.json({ goals: user.goals || [] });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to retrieve goals.' });
+    }
+});
 
 // ========================== SECRET CODE VERIFY ==========================
 app.post('/api/verify-secret', authMiddleware, async (req, res) => {
