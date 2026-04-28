@@ -48,6 +48,7 @@ const userSchema = new mongoose.Schema({
         unique: true,
         default: () => '1' + Math.floor(100000000 + Math.random() * 900000000).toString().slice(1)
     },
+    lastLoginTime: { type: Number },
     fullName: { type: String, trim: true },
     mobileNumber: { type: String, trim: true },
     nationalID: { type: String, trim: true },
@@ -462,6 +463,16 @@ app.post('/api/login', async (req, res) => {
 
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(400).json({ msg: 'Invalid credentials' });
+
+        // ✅ ===== ADD IT HERE =====
+        const now = Date.now();
+
+        if (user.lastLoginTime && (now - user.lastLoginTime) < 10000) {
+            return res.status(429).json({ msg: "Too many login attempts" });
+        }
+
+        user.lastLoginTime = now;
+        // =========================
 
         const token = jwt.sign(
             { id: user._id, email: user.email },
