@@ -94,7 +94,7 @@ const userSchema = new mongoose.Schema({
         desiredDate: { type: String, trim: true },
         notifyMe: { type: String, trim: true, default: 'yes' },
         createdAt: { type: Date, default: Date.now }
-    }]
+    }],
     points: { type: Number, default: 0 },
 
     loginLogs: [
@@ -106,7 +106,7 @@ const userSchema = new mongoose.Schema({
     ],
 
     referralPhone: { type: String, trim: true }
-    });
+});
 
 const User = mongoose.model('User', userSchema);
 
