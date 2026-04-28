@@ -459,14 +459,88 @@ app.post('/api/login', async (req, res) => {
     try {
         const user = await User.findOne({ email });
         if (!user) return res.status(400).json({ msg: 'Invalid credentials' });
+
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(400).json({ msg: 'Invalid credentials' });
-        const token = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
-        res.json({ token, msg: 'Login successful' });
+
+        const token = jwt.sign(
+            { id: user._id, email: user.email },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+
+        // ===== LOGIN POINT LOGIC =====
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        if (!user.loginLogs) user.loginLogs = [];
+        if (!user.points) user.points = 0;
+
+        const alreadyLoggedToday = user.loginLogs.some(log => {
+            const logDate = new Date(log.date);
+            logDate.setHours(0, 0, 0, 0);
+            return logDate.getTime() === today.getTime();
+        });
+
+        if (!alreadyLoggedToday) {
+            user.points += 1;
+            user.loginLogs.push({ date: new Date() });
+            await user.save();
+        }
+
+        res.json({
+            token,
+            msg: 'Login successful',
+            points: user.points
+        });
+
     } catch (err) {
         console.error('Login error:', err);
         res.status(500).json({ msg: 'Login failed' });
     }
+});
+
+app.post('/api/referral-submit', authMiddleware, async (req, res) => {
+    try {
+        const { referredBy, referralPhone } = req.body;
+
+        const user = await User.findOne({ email: req.user.email });
+
+        if (!user) return res.status(404).json({ msg: "User not found" });
+
+        // Save submission
+        user.referredBy = referredBy || '';
+        user.referralPhone = referralPhone || '';
+
+        user.points += 2; // form submission reward
+        user.formSubmissions.push({ date: new Date() });
+
+        // Referral match logic
+        if (referredBy && referralPhone) {
+            const refUser = await User.findOne({
+                fullName: { $regex: `^${referredBy}$`, $options: 'i' },
+                mobileNumber: referralPhone
+            });
+
+            if (refUser) {
+                refUser.points += 5;
+                await refUser.save();
+            }
+        }
+
+        await user.save();
+
+        res.json({ msg: "Saved successfully", points: user.points });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ msg: "Error saving referral" });
+    }
+});
+
+app.get('/api/points', authMiddleware, async (req, res) => {
+    const user = await User.findOne({ email: req.user.email });
+    res.json({ points: user.points || 0 });
 });
 
 app.get('/api/profile', authMiddleware, async (req, res) => {
