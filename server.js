@@ -419,7 +419,7 @@ app.get('/api/occupations-stats', authMiddleware, async (req, res) => {
 
 // ========================== AUTH ROUTES ==========================
 app.post('/api/register', async (req, res) => {
-    const { email, password, mobileNumber, occupation, confirmPassword, secretCode } = req.body;
+    const { email, password, mobileNumber, occupation, referredBy, referralPhone, confirmPassword, secretCode } = req.body;
     try {
         console.log('Register attempt for email:', email);
         if (!email || !password || !mobileNumber || !occupation || !confirmPassword || !secretCode) {
@@ -432,26 +432,97 @@ app.post('/api/register', async (req, res) => {
         if (existingUser) {
             return res.status(400).json({ msg: 'User already exists' });
         }
+
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
         const hashedSecret = await bcrypt.hash(secretCode, salt);
+
         const user = new User({
             email,
             password: hashedPassword,
             mobileNumber,
             occupation,
+            referredBy: referredBy || '',
+            referralPhone: referralPhone || '',
             secretCode: hashedSecret,
-            consentGiven: true
+            consentGiven: true,
+            points: 0
         });
+
         if (email === 'wambuguhkw@gmail.com') {
             user.permanentID = '170320358';
         }
+
         await user.save();
+
+        // ===== REFERRAL POINTS CREDITING =====
+        if (referredBy && referralPhone) {
+            const referrer = await User.findOne({
+                fullName: { $regex: new RegExp('^' + referredBy + '$', 'i') },
+                mobileNumber: referralPhone
+            });
+
+            if (referrer) {
+                referrer.points = (referrer.points || 0) + 5;
+                await referrer.save();
+                console.log(`✅ 5 points credited to referrer: ${referrer.email}`);
+            }
+        }
+
         console.log('User registered successfully:', email);
         res.status(201).json({ msg: 'Account created successfully! You can now login.' });
     } catch (err) {
         console.error('Register error details:', err.message);
         res.status(500).json({ msg: 'Registration failed. Please try again.' });
+    }
+});
+
+// POST: Create a new Ad + Award 4 points to poster
+app.post('/api/ads/create', upload.array('images', 5), authMiddleware, async (req, res) => {
+    try {
+        console.log("BODY:", req.body);
+        console.log("FILES:", req.files);
+
+        const imagePaths = (req.files || []).map(file =>
+            '/uploads/ads/' + file.filename
+        );
+
+        const newAd = new Advert({
+            category: req.body.category,
+            title: req.body.title,
+            price: req.body.price,
+            description: req.body.description,
+            locationName: req.body.locationName,
+            phone: req.body.phone,
+            condition: req.body.condition?.toLowerCase(),
+            images: imagePaths,
+            geo: {
+                lat: req.body.lat ? parseFloat(req.body.lat) : null,
+                lng: req.body.lng ? parseFloat(req.body.lng) : null
+            }
+        });
+
+        await newAd.save();
+
+        // Award 4 points to the user who posted the ad
+        const user = await User.findOne({ email: req.user.email });
+        if (user) {
+            user.points = (user.points || 0) + 4;
+            await user.save();
+            console.log(`✅ 4 points awarded for posting ad to: ${user.email}`);
+        }
+
+        return res.status(201).json({
+            success: true,
+            message: 'Ad created successfully!',
+            points: user ? user.points : 0
+        });
+    } catch (error) {
+        console.error("CREATE AD ERROR:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Server error"
+        });
     }
 });
 
