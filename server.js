@@ -181,46 +181,8 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
+
 // ========================== ADS ROUTES ==========================
-
-// POST: Create a new Ad
-app.post('/api/ads/create', upload.array('images', 5), async (req, res) => {
-    try {
-        console.log("BODY:", req.body);
-        console.log("FILES:", req.files);
-
-        const imagePaths = (req.files || []).map(file =>
-            '/uploads/ads/' + file.filename
-        );
-
-        const newAd = new Advert({
-            category: req.body.category,
-            title: req.body.title,
-            price: req.body.price,
-            description: req.body.description,
-            locationName: req.body.locationName,
-            phone: req.body.phone,
-            condition: req.body.condition?.toLowerCase(),
-            images: imagePaths,
-            geo: {
-                lat: req.body.lat ? parseFloat(req.body.lat) : null,
-                lng: req.body.lng ? parseFloat(req.body.lng) : null
-            }
-        });
-
-        await newAd.save();
-        return res.status(201).json({
-            success: true,
-            message: 'Ad created successfully!'
-        });
-    } catch (error) {
-        console.error("CREATE AD ERROR:", error);
-        return res.status(500).json({
-            success: false,
-            message: "Server error"
-        });
-    }
-});
 
 // GET: Fetch ads (optionally filtered by category and/or search term)
 app.get('/api/ads', async (req, res) => {
