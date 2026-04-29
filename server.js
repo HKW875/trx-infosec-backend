@@ -125,6 +125,7 @@ try {
         phone: { type: String, trim: true },
         condition: { type: String, trim: true },
         images: [{ type: String }],
+        views: { type: Number, default: 0 },
         geo: {
             lat: { type: Number, default: null },
             lng: { type: Number, default: null }
@@ -219,6 +220,16 @@ app.get('/api/ads', async (req, res) => {
         res.json({ data: ads });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch ads' });
+    }
+});
+
+// POST: Record a view for a listing
+app.post('/api/ads/:id/view', async (req, res) => {
+    try {
+        await Advert.findByIdAndUpdate(req.params.id, { $inc: { views: 1 } });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to record view' });
     }
 });
 
