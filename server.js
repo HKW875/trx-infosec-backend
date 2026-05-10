@@ -158,10 +158,35 @@ try {
         budget: { type: String, trim: true },
         desiredDate: { type: String, trim: true },
         notifyMe: { type: String, trim: true, default: 'yes' },
-        userEmail: { type: String, trim: true, default: null }, // null = anonymous
+        userEmail: { type: String, trim: true, default: null },
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
         createdAt: { type: Date, default: Date.now }
     });
     Goal = mongoose.model('Goal', goalSchema);
+}
+
+// ========================== GOAL NOTIFICATION MODEL ==========================
+let GoalNotification;
+try {
+    GoalNotification = mongoose.model('GoalNotification');
+} catch (e) {
+    const goalNotificationSchema = new mongoose.Schema({
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        userEmail: { type: String, required: true },
+        goalId: { type: mongoose.Schema.Types.ObjectId },
+        adId: { type: mongoose.Schema.Types.ObjectId, ref: 'Advert' },
+        type: { type: String, enum: ['match', 'proximity'], required: true },
+        message: { type: String, required: true },
+        adTitle: { type: String },
+        adPrice: { type: String },
+        adPhone: { type: String },
+        adLocation: { type: String },
+        adCategory: { type: String },
+        distance: { type: Number }, // km, for proximity alerts
+        read: { type: Boolean, default: false },
+        createdAt: { type: Date, default: Date.now }
+    });
+    GoalNotification = mongoose.model('GoalNotification', goalNotificationSchema);
 }
 
 // ========================== MULTER SETUP ==========================
@@ -248,8 +273,76 @@ const authMiddleware = (req, res, next) => {
     }
 };
 
+// ========================== GOAL MATCHING HELPER ==========================
+// Haversine formula to calculate distance between two lat/lng points in km
+function haversineDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// Match a single goal against all ads and create notifications for matches
+async function matchGoalToAds(goal, userId, userEmail) {
+    try {
+        const query = {};
+        if (goal.category) query.category = { $regex: new RegExp(goal.category, 'i') };
+
+        const ads = await Advert.find(query);
+        const matches = [];
+
+        for (const ad of ads) {
+            // Product keyword match
+            const productWords = (goal.product || '').toLowerCase().split(/\s+/).filter(Boolean);
+            const adText = `${ad.title} ${ad.description} ${ad.category}`.toLowerCase();
+            const productMatch = productWords.length === 0 || productWords.some(w => adText.includes(w));
+
+            // Budget match: ad price <= user budget
+            let budgetMatch = true;
+            if (goal.budget) {
+                const userBudget = parseFloat(goal.budget.toString().replace(/[^0-9.]/g, ''));
+                const adPrice = parseFloat((ad.price || '0').toString().replace(/[^0-9.]/g, ''));
+                if (!isNaN(userBudget) && !isNaN(adPrice)) {
+                    budgetMatch = adPrice <= userBudget;
+                }
+            }
+
+            if (productMatch && budgetMatch) {
+                // Check if notification already exists
+                const exists = await GoalNotification.findOne({
+                    userId, adId: ad._id, type: 'match'
+                });
+                if (!exists) {
+                    matches.push(ad);
+                    await GoalNotification.create({
+                        userId,
+                        userEmail,
+                        goalId: goal._id,
+                        adId: ad._id,
+                        type: 'match',
+                        message: `🎯 A match for your goal "${goal.product}" was found: "${ad.title}" at KES ${ad.price}`,
+                        adTitle: ad.title,
+                        adPrice: ad.price,
+                        adPhone: ad.phone,
+                        adLocation: ad.locationName,
+                        adCategory: ad.category,
+                        read: false
+                    });
+                }
+            }
+        }
+        return matches.length;
+    } catch (err) {
+        console.error('Goal matching error:', err);
+        return 0;
+    }
+}
+
 // ========================== MY GOAL ROUTE ==========================
-// POST /api/goals — saves a user goal (authenticated saves to user profile, anonymous saves to Goal collection)
+// POST /api/goals — saves a user goal and immediately checks for matches
 app.post('/api/goals', async (req, res) => {
     try {
         const { product, category, budget, desiredDate, notifyMe } = req.body;
@@ -267,11 +360,19 @@ app.post('/api/goals', async (req, res) => {
                 const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
                 const user = await User.findOne({ email: decoded.email });
                 if (user) {
-                    // Save goal to user's profile
                     user.goals.push(goalData);
                     await user.save();
+                    const savedGoal = user.goals[user.goals.length - 1];
                     console.log(`✅ Goal saved to user profile: ${decoded.email}`);
-                    return res.status(201).json({ msg: 'Goal saved to your profile successfully.' });
+
+                    // Run matching in background
+                    if (notifyMe !== 'no') {
+                        matchGoalToAds(savedGoal, user._id, user.email).then(count => {
+                            if (count > 0) console.log(`🔔 ${count} match notification(s) created for ${user.email}`);
+                        });
+                    }
+
+                    return res.status(201).json({ msg: 'Goal saved! We\'ll notify you when a match is found.' });
                 }
             } catch (tokenErr) {
                 // Token invalid — fall through to anonymous save
@@ -298,6 +399,182 @@ app.get('/api/goals', authMiddleware, async (req, res) => {
         res.json({ goals: user.goals || [] });
     } catch (err) {
         res.status(500).json({ msg: 'Failed to retrieve goals.' });
+    }
+});
+
+// ========================== NOTIFICATIONS ROUTES ==========================
+// GET /api/notifications — get all unread notifications for current user
+app.get('/api/notifications', authMiddleware, async (req, res) => {
+    try {
+        const user = await User.findOne({ email: req.user.email });
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+
+        const notifications = await GoalNotification.find({
+            userId: user._id
+        }).sort({ createdAt: -1 }).limit(50);
+
+        const unreadCount = notifications.filter(n => !n.read).length;
+        res.json({ notifications, unreadCount });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to retrieve notifications.' });
+    }
+});
+
+// POST /api/notifications/mark-read — mark all notifications as read
+app.post('/api/notifications/mark-read', authMiddleware, async (req, res) => {
+    try {
+        const user = await User.findOne({ email: req.user.email });
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+        await GoalNotification.updateMany({ userId: user._id, read: false }, { read: true });
+        res.json({ msg: 'All notifications marked as read.' });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to mark notifications.' });
+    }
+});
+
+// POST /api/notifications/mark-read/:id — mark single notification as read
+app.post('/api/notifications/mark-read/:id', authMiddleware, async (req, res) => {
+    try {
+        await GoalNotification.findByIdAndUpdate(req.params.id, { read: true });
+        res.json({ msg: 'Notification marked as read.' });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to mark notification.' });
+    }
+});
+
+// POST /api/proximity-check — called by frontend when user location changes
+// Checks user's goals vs nearby ads (within 2km)
+app.post('/api/proximity-check', authMiddleware, async (req, res) => {
+    try {
+        const { latitude, longitude } = req.body;
+        if (!latitude || !longitude) return res.json({ proximityAlerts: 0 });
+
+        const user = await User.findOne({ email: req.user.email });
+        if (!user || !user.goals || user.goals.length === 0) return res.json({ proximityAlerts: 0 });
+
+        // Update user location
+        user.location = { latitude, longitude, timestamp: new Date() };
+        await user.save();
+
+        // Get all ads with geo data
+        const ads = await Advert.find({ 'geo.lat': { $ne: null }, 'geo.lng': { $ne: null } });
+        let alertCount = 0;
+
+        for (const goal of user.goals) {
+            if (goal.notifyMe === 'no') continue;
+            for (const ad of ads) {
+                // Category match
+                if (goal.category && ad.category &&
+                    !ad.category.toLowerCase().includes(goal.category.toLowerCase()) &&
+                    !goal.category.toLowerCase().includes(ad.category.toLowerCase())) continue;
+
+                const distance = haversineDistance(latitude, longitude, ad.geo.lat, ad.geo.lng);
+                if (distance <= 2) {
+                    // Check if proximity notification already exists recently (within 24h)
+                    const recentAlert = await GoalNotification.findOne({
+                        userId: user._id,
+                        adId: ad._id,
+                        type: 'proximity',
+                        createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+                    });
+                    if (!recentAlert) {
+                        await GoalNotification.create({
+                            userId: user._id,
+                            userEmail: user.email,
+                            goalId: goal._id,
+                            adId: ad._id,
+                            type: 'proximity',
+                            message: `📍 You're ${distance.toFixed(1)}km from a seller matching your goal "${goal.product}": "${ad.title}" at KES ${ad.price}`,
+                            adTitle: ad.title,
+                            adPrice: ad.price,
+                            adPhone: ad.phone,
+                            adLocation: ad.locationName,
+                            adCategory: ad.category,
+                            distance: parseFloat(distance.toFixed(2)),
+                            read: false
+                        });
+                        alertCount++;
+                    }
+                }
+            }
+        }
+
+        res.json({ proximityAlerts: alertCount });
+    } catch (err) {
+        console.error('Proximity check error:', err);
+        res.status(500).json({ msg: 'Proximity check failed.' });
+    }
+});
+
+// POST /api/match-goals-for-new-ad — called when a new ad is posted
+// Finds all users whose goals match this ad and creates notifications
+app.post('/api/match-goals-for-new-ad', authMiddleware, async (req, res) => {
+    try {
+        const { adId } = req.body;
+        if (!adId) return res.status(400).json({ msg: 'adId required' });
+
+        const ad = await Advert.findById(adId);
+        if (!ad) return res.status(404).json({ msg: 'Ad not found' });
+
+        const adPrice = parseFloat((ad.price || '0').replace(/[^0-9.]/g, ''));
+        const adText = `${ad.title} ${ad.description} ${ad.category}`.toLowerCase();
+
+        // Find all users with goals that want notifications
+        const users = await User.find({ 'goals.0': { $exists: true } }).select('_id email goals');
+        let notifCount = 0;
+
+        for (const user of users) {
+            for (const goal of user.goals) {
+                if (goal.notifyMe === 'no') continue;
+
+                // Category match
+                const catMatch = !goal.category || !ad.category ||
+                    ad.category.toLowerCase().includes(goal.category.toLowerCase()) ||
+                    goal.category.toLowerCase().includes(ad.category.toLowerCase());
+                if (!catMatch) continue;
+
+                // Product keyword match
+                const productWords = (goal.product || '').toLowerCase().split(/\s+/).filter(Boolean);
+                const productMatch = productWords.length === 0 || productWords.some(w => adText.includes(w));
+                if (!productMatch) continue;
+
+                // Budget match
+                let budgetMatch = true;
+                if (goal.budget) {
+                    const userBudget = parseFloat(goal.budget.toString().replace(/[^0-9.]/g, ''));
+                    if (!isNaN(userBudget) && !isNaN(adPrice)) {
+                        budgetMatch = adPrice <= userBudget;
+                    }
+                }
+                if (!budgetMatch) continue;
+
+                // Check if notification already exists
+                const exists = await GoalNotification.findOne({ userId: user._id, adId: ad._id, type: 'match' });
+                if (!exists) {
+                    await GoalNotification.create({
+                        userId: user._id,
+                        userEmail: user.email,
+                        goalId: goal._id,
+                        adId: ad._id,
+                        type: 'match',
+                        message: `🎯 A new listing matches your goal "${goal.product}": "${ad.title}" at KES ${ad.price}`,
+                        adTitle: ad.title,
+                        adPrice: ad.price,
+                        adPhone: ad.phone,
+                        adLocation: ad.locationName,
+                        adCategory: ad.category,
+                        read: false
+                    });
+                    notifCount++;
+                }
+            }
+        }
+
+        console.log(`🔔 New ad ${adId} matched ${notifCount} user goals`);
+        res.json({ matched: notifCount });
+    } catch (err) {
+        console.error('Goal matching for new ad error:', err);
+        res.status(500).json({ msg: 'Matching failed.' });
     }
 });
 
@@ -484,6 +761,46 @@ app.post('/api/ads/create', upload.array('images', 5), authMiddleware, async (re
             await user.save();
             console.log(`✅ 4 points awarded for posting ad to: ${user.email}`);
         }
+
+        // Trigger goal matching for this new ad (background, non-blocking)
+        setTimeout(async () => {
+            try {
+                const adPrice = parseFloat((newAd.price || '0').replace(/[^0-9.]/g, ''));
+                const adText = `${newAd.title} ${newAd.description} ${newAd.category}`.toLowerCase();
+                const users = await User.find({ 'goals.0': { $exists: true } }).select('_id email goals');
+                let notifCount = 0;
+                for (const u of users) {
+                    for (const goal of u.goals) {
+                        if (goal.notifyMe === 'no') continue;
+                        const catMatch = !goal.category || !newAd.category ||
+                            newAd.category.toLowerCase().includes(goal.category.toLowerCase()) ||
+                            goal.category.toLowerCase().includes(newAd.category.toLowerCase());
+                        if (!catMatch) continue;
+                        const productWords = (goal.product || '').toLowerCase().split(/\s+/).filter(Boolean);
+                        const productMatch = productWords.length === 0 || productWords.some(w => adText.includes(w));
+                        if (!productMatch) continue;
+                        let budgetMatch = true;
+                        if (goal.budget) {
+                            const userBudget = parseFloat(goal.budget.toString().replace(/[^0-9.]/g, ''));
+                            if (!isNaN(userBudget) && !isNaN(adPrice)) budgetMatch = adPrice <= userBudget;
+                        }
+                        if (!budgetMatch) continue;
+                        const exists = await GoalNotification.findOne({ userId: u._id, adId: newAd._id, type: 'match' });
+                        if (!exists) {
+                            await GoalNotification.create({
+                                userId: u._id, userEmail: u.email, goalId: goal._id, adId: newAd._id,
+                                type: 'match',
+                                message: `🎯 A new listing matches your goal "${goal.product}": "${newAd.title}" at KES ${newAd.price}`,
+                                adTitle: newAd.title, adPrice: newAd.price, adPhone: newAd.phone,
+                                adLocation: newAd.locationName, adCategory: newAd.category, read: false
+                            });
+                            notifCount++;
+                        }
+                    }
+                }
+                if (notifCount > 0) console.log(`🔔 New ad matched ${notifCount} user goals`);
+            } catch (e) { console.error('Background goal matching error:', e); }
+        }, 100);
 
         return res.status(201).json({
             success: true,
