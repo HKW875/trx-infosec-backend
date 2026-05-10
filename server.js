@@ -32,7 +32,14 @@ webpush.setVapidDetails(
 // ========================== MIDDLEWARE ==========================
 app.use('/uploads', express.static('uploads'))
 const corsOptions = {
-  origin: ['https://growthbase.net', 'https://trxinfosec.hkw875.workers.dev'],
+  origin: [
+    'https://growthbase.net',
+    'https://www.growthbase.net',
+    'https://trxinfosec.hkw875.workers.dev',
+    'http://localhost:3000',
+    'http://localhost:5500',
+    'http://127.0.0.1:5500'
+  ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   credentials: true,
@@ -150,6 +157,8 @@ try {
             lat: { type: Number, default: null },
             lng: { type: Number, default: null }
         },
+        postedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        postedByEmail: { type: String, default: null },
         createdAt: { type: Date, default: Date.now }
     });
     Advert = mongoose.model('Advert', advertSchema);
@@ -230,6 +239,27 @@ try {
         createdAt:    { type: Date, default: Date.now }
     });
     SellerNotification = mongoose.model('SellerNotification', sellerNotificationSchema);
+}
+
+// ========================== CHAT MESSAGE MODEL ==========================
+let ChatMessage;
+try {
+    ChatMessage = mongoose.model('ChatMessage');
+} catch (e) {
+    const chatMessageSchema = new mongoose.Schema({
+        roomId:      { type: String, required: true, index: true }, // e.g. "adId_userId1_userId2"
+        adId:        { type: mongoose.Schema.Types.ObjectId, ref: 'Advert' },
+        adTitle:     { type: String },
+        senderId:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        senderEmail: { type: String, required: true },
+        senderName:  { type: String },
+        receiverId:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        receiverEmail:{ type: String },
+        message:     { type: String, required: true, maxlength: 2000 },
+        read:        { type: Boolean, default: false },
+        createdAt:   { type: Date, default: Date.now }
+    });
+    ChatMessage = mongoose.model('ChatMessage', chatMessageSchema);
 }
 
 // ========================== MULTER SETUP ==========================
@@ -354,6 +384,7 @@ function haversineDistance(lat1, lon1, lat2, lon2) {
 }
 
 // Match a single goal against all ads, create in-app + push notifications
+// KEY FIX: geo/proximity is optional — if either side has no geo, still match on product+budget+category
 async function matchGoalToAds(goal, userId, userEmail, userLat, userLng) {
     try {
         const query = {};
@@ -363,54 +394,52 @@ async function matchGoalToAds(goal, userId, userEmail, userLat, userLng) {
         let matchCount = 0;
 
         for (const ad of ads) {
-            // Product keyword match
+            // 1. Product keyword match
             const productWords = (goal.product || '').toLowerCase().split(/\s+/).filter(Boolean);
             const adText = `${ad.title} ${ad.description} ${ad.category}`.toLowerCase();
             const productMatch = productWords.length === 0 || productWords.some(w => adText.includes(w));
+            if (!productMatch) continue;
 
-            // Budget match: ad price <= user budget
-            let budgetMatch = true;
+            // 2. Budget match: ad price <= user budget
             if (goal.budget) {
                 const userBudget = parseFloat(goal.budget.toString().replace(/[^0-9.]/g, ''));
                 const adPrice = parseFloat((ad.price || '0').toString().replace(/[^0-9.]/g, ''));
-                if (!isNaN(userBudget) && !isNaN(adPrice)) budgetMatch = adPrice <= userBudget;
+                if (!isNaN(userBudget) && !isNaN(adPrice) && adPrice > userBudget) continue;
             }
 
-            // Proximity match (10km) if user location known
-            let proximityOk = true;
+            // 3. Proximity — ONLY filter by distance if BOTH sides have geo data
             let distance = null;
             if (userLat && userLng && ad.geo && ad.geo.lat && ad.geo.lng) {
-                distance = haversineDistance(userLat, userLng, ad.geo.lat, ad.geo.lng);
-                proximityOk = distance <= 10;
+                distance = parseFloat(haversineDistance(userLat, userLng, ad.geo.lat, ad.geo.lng).toFixed(2));
+                if (distance > 10) continue; // outside 10km — skip
             }
+            // If either side has no geo, we still match (no distance filter applied)
 
-            if (productMatch && budgetMatch && proximityOk) {
-                const exists = await GoalNotification.findOne({ userId, adId: ad._id, type: 'match' });
-                if (!exists) {
-                    const msg = `🎯 A match for your goal "${goal.product}" was found: "${ad.title}" at KES ${ad.price}${distance ? ` (${distance.toFixed(1)}km away)` : ''}`;
-                    await GoalNotification.create({
-                        userId, userEmail, goalId: goal._id, adId: ad._id,
-                        type: 'match', message: msg,
-                        adTitle: ad.title, adPrice: ad.price, adPhone: ad.phone,
-                        adLocation: ad.locationName, adCategory: ad.category,
-                        distance: distance ? parseFloat(distance.toFixed(2)) : null,
-                        read: false
-                    });
-                    matchCount++;
+            // 4. Deduplicate
+            const exists = await GoalNotification.findOne({ userId, adId: ad._id, type: 'match' });
+            if (exists) continue;
 
-                    // Send web push (works even when user is logged out)
-                    const userDoc = await User.findById(userId).select('pushSubscriptions');
-                    if (userDoc) {
-                        await sendPushToUser(userDoc, {
-                            title: '🎯 GrowthBase Match Found!',
-                            body: msg,
-                            icon: '/icon-192.png',
-                            badge: '/badge-72.png',
-                            tag: `match-${ad._id}`,
-                            data: { type: 'match', adId: ad._id.toString() }
-                        });
-                    }
-                }
+            const distStr = distance !== null ? ` (${distance.toFixed(1)}km away)` : '';
+            const msg = `🎯 A match for your goal "${goal.product}" was found: "${ad.title}" at KES ${ad.price}${distStr}`;
+            await GoalNotification.create({
+                userId, userEmail, goalId: goal._id, adId: ad._id,
+                type: 'match', message: msg,
+                adTitle: ad.title, adPrice: ad.price, adPhone: ad.phone,
+                adLocation: ad.locationName, adCategory: ad.category,
+                distance, read: false
+            });
+            matchCount++;
+
+            // Send web push (works even when user is logged out)
+            const userDoc = await User.findById(userId).select('pushSubscriptions');
+            if (userDoc) {
+                await sendPushToUser(userDoc, {
+                    title: '🎯 GrowthBase: Match Found!',
+                    body: msg,
+                    icon: '/icons/icon-192.png',
+                    tag: `match-${ad._id}`,
+                    data: { type: 'match', adId: ad._id.toString() }
+                });
             }
         }
         return matchCount;
@@ -485,52 +514,47 @@ app.post('/api/goals', async (req, res) => {
 });
 
 // ========================== SELLER NOTIFICATION HELPER ==========================
-// When a new "My Goal" is submitted, find sellers with ads in the same category
-// within 10km of the buyer's location and create/push a SellerNotification.
 async function notifySellersOfNewGoal(goal, buyerId, buyerEmail, buyerLat, buyerLng) {
     try {
-        // Find all ads in matching category
         const catQuery = goal.category
             ? { category: { $regex: new RegExp(goal.category, 'i') } }
             : {};
         const ads = await Advert.find(catQuery);
 
-        // Group ads by poster phone (seller identifier — no user linkage on ads yet)
-        // We match ads with geo data and find users who own them via phone number
         for (const ad of ads) {
-            // Proximity check — only do it if both the ad and buyer have location
+            // Proximity check — only filter by distance if BOTH buyer and ad have geo
             let distance = null;
             if (buyerLat && buyerLng && ad.geo && ad.geo.lat && ad.geo.lng) {
-                distance = haversineDistance(buyerLat, buyerLng, ad.geo.lat, ad.geo.lng);
-                if (distance > 10) continue; // outside 10km
+                distance = parseFloat(haversineDistance(buyerLat, buyerLng, ad.geo.lat, ad.geo.lng).toFixed(2));
+                if (distance > 10) continue; // outside 10km, skip
+            }
+            // If geo missing on either side, still notify (no distance filter)
+
+            // Find seller: first try postedBy on ad, then by phone match
+            let seller = null;
+            if (ad.postedBy) {
+                seller = await User.findById(ad.postedBy).select('_id email fullName pushSubscriptions');
+            } else if (ad.phone) {
+                seller = await User.findOne({
+                    $or: [{ mobileNumber: ad.phone }, { phone: ad.phone }]
+                }).select('_id email fullName pushSubscriptions');
             }
 
-            // Find the seller user by matching their phone number to the ad's contact phone
-            if (!ad.phone) continue;
-            const seller = await User.findOne({
-                $or: [
-                    { mobileNumber: ad.phone },
-                    { phone: ad.phone }
-                ]
-            }).select('_id email pushSubscriptions');
-
             if (!seller) continue;
-            // Don't notify a buyer about their own ad
             if (buyerId && seller._id.toString() === buyerId.toString()) continue;
 
-            // Deduplicate — one seller notification per (seller, goal) pair per 24h
-            const goalIdStr = goal._id ? goal._id.toString() : `${goal.product}-${goal.category}`;
+            // Deduplicate per seller+goal per 24h
             const recentSellerNotif = await SellerNotification.findOne({
                 sellerId: seller._id,
-                'goalProduct': goal.product,
-                'goalCategory': goal.category,
+                goalProduct: goal.product,
+                goalCategory: goal.category,
                 createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
             });
             if (recentSellerNotif) continue;
 
-            const distStr = distance ? ` (${distance.toFixed(1)}km away)` : '';
+            const distStr = distance !== null ? ` (${distance.toFixed(1)}km from buyer)` : '';
             const budgetStr = goal.budget ? ` Budget: KES ${goal.budget}.` : '';
-            const msg = `🛒 New buyer goal in your category "${ad.category}"! Someone is looking for "${goal.product}".${budgetStr}${distStr} Contact them via GrowthBase.`;
+            const msg = `🛒 New buyer in "${ad.category}"! Someone wants "${goal.product}".${budgetStr}${distStr} Open GrowthBase to chat.`;
 
             await SellerNotification.create({
                 sellerId: seller._id,
@@ -541,17 +565,15 @@ async function notifySellersOfNewGoal(goal, buyerId, buyerEmail, buyerLat, buyer
                 goalProduct: goal.product,
                 goalBudget: goal.budget,
                 goalCategory: goal.category,
-                buyerLocation: buyerLat ? `${buyerLat.toFixed(4)},${buyerLng.toFixed(4)}` : null,
-                distance: distance ? parseFloat(distance.toFixed(2)) : null,
+                buyerLocation: buyerLat ? `${parseFloat(buyerLat).toFixed(4)},${parseFloat(buyerLng).toFixed(4)}` : null,
+                distance,
                 read: false
             });
 
-            // Send web push to seller (works even if logged out)
             await sendPushToUser(seller, {
                 title: '🛒 New Buyer Near You!',
                 body: msg,
-                icon: '/icon-192.png',
-                badge: '/badge-72.png',
+                icon: '/icons/icon-192.png',
                 tag: `seller-goal-${ad._id}-${Date.now()}`,
                 data: { type: 'seller_goal', adId: ad._id.toString() }
             });
@@ -868,6 +890,143 @@ app.post('/api/match-goals-for-new-ad', authMiddleware, async (req, res) => {
     }
 });
 
+// ========================== CHAT ROUTES ==========================
+
+// GET /api/ads/:id/poster — get the poster info for an ad (to initiate chat)
+app.get('/api/ads/:id/poster', authMiddleware, async (req, res) => {
+    try {
+        const ad = await Advert.findById(req.params.id).select('title postedBy postedByEmail phone category price');
+        if (!ad) return res.status(404).json({ msg: 'Ad not found' });
+
+        // Try to resolve poster by stored postedBy, then by phone
+        let posterName = 'Seller';
+        let posterId = ad.postedBy;
+        let posterEmail = ad.postedByEmail;
+
+        if (!posterId && ad.phone) {
+            const seller = await User.findOne({
+                $or: [{ mobileNumber: ad.phone }, { phone: ad.phone }]
+            }).select('_id email fullName');
+            if (seller) {
+                posterId = seller._id;
+                posterEmail = seller.email;
+                posterName = seller.fullName || seller.email;
+            }
+        } else if (posterId) {
+            const seller = await User.findById(posterId).select('fullName email');
+            if (seller) posterName = seller.fullName || seller.email;
+        }
+
+        res.json({ posterId, posterEmail, posterName, adTitle: ad.title, adId: ad._id });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to get poster info' });
+    }
+});
+
+// GET /api/chat/:roomId — get all messages for a room
+app.get('/api/chat/:roomId', authMiddleware, async (req, res) => {
+    try {
+        const messages = await ChatMessage.find({ roomId: req.params.roomId })
+            .sort({ createdAt: 1 }).limit(100);
+
+        // Mark messages from other user as read
+        const user = await User.findOne({ email: req.user.email });
+        if (user) {
+            await ChatMessage.updateMany(
+                { roomId: req.params.roomId, receiverId: user._id, read: false },
+                { read: true }
+            );
+        }
+        res.json({ messages });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to load messages' });
+    }
+});
+
+// POST /api/chat/send — send a chat message
+app.post('/api/chat/send', authMiddleware, async (req, res) => {
+    try {
+        const { roomId, adId, adTitle, receiverId, receiverEmail, message } = req.body;
+        if (!message || !message.trim()) return res.status(400).json({ msg: 'Message cannot be empty' });
+        if (!roomId) return res.status(400).json({ msg: 'roomId required' });
+
+        const sender = await User.findOne({ email: req.user.email }).select('_id email fullName pushSubscriptions');
+        if (!sender) return res.status(404).json({ msg: 'Sender not found' });
+
+        const newMsg = await ChatMessage.create({
+            roomId,
+            adId: adId || null,
+            adTitle: adTitle || null,
+            senderId: sender._id,
+            senderEmail: sender.email,
+            senderName: sender.fullName || sender.email,
+            receiverId: receiverId || null,
+            receiverEmail: receiverEmail || null,
+            message: message.trim(),
+            read: false
+        });
+
+        // Push notify the receiver
+        if (receiverId) {
+            const receiver = await User.findById(receiverId).select('pushSubscriptions');
+            if (receiver) {
+                await sendPushToUser(receiver, {
+                    title: `💬 New message from ${sender.fullName || sender.email}`,
+                    body: message.trim().slice(0, 100),
+                    icon: '/icons/icon-192.png',
+                    tag: `chat-${roomId}`,
+                    data: { type: 'chat', roomId, adId: adId || '' }
+                });
+            }
+        }
+
+        res.status(201).json({ msg: newMsg });
+    } catch (err) {
+        console.error('Chat send error:', err);
+        res.status(500).json({ msg: 'Failed to send message' });
+    }
+});
+
+// GET /api/chat/rooms/mine — list all chat rooms this user is in, with last message + unread count
+app.get('/api/chat/rooms/mine', authMiddleware, async (req, res) => {
+    try {
+        const user = await User.findOne({ email: req.user.email });
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+
+        // Find all rooms where this user is sender or receiver
+        const messages = await ChatMessage.find({
+            $or: [{ senderId: user._id }, { receiverId: user._id }]
+        }).sort({ createdAt: -1 });
+
+        // Group by roomId
+        const roomMap = {};
+        for (const msg of messages) {
+            if (!roomMap[msg.roomId]) {
+                roomMap[msg.roomId] = {
+                    roomId: msg.roomId,
+                    adId: msg.adId,
+                    adTitle: msg.adTitle,
+                    lastMessage: msg.message,
+                    lastAt: msg.createdAt,
+                    otherEmail: msg.senderId.toString() === user._id.toString() ? msg.receiverEmail : msg.senderEmail,
+                    otherName: msg.senderId.toString() === user._id.toString() ? (msg.receiverEmail || 'User') : (msg.senderName || msg.senderEmail),
+                    otherId: msg.senderId.toString() === user._id.toString() ? msg.receiverId : msg.senderId,
+                    unread: 0
+                };
+            }
+            if (!msg.read && msg.receiverId && msg.receiverId.toString() === user._id.toString()) {
+                roomMap[msg.roomId].unread++;
+            }
+        }
+
+        const rooms = Object.values(roomMap).sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
+        const totalUnread = rooms.reduce((sum, r) => sum + r.unread, 0);
+        res.json({ rooms, totalUnread });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to load chat rooms' });
+    }
+});
+
 // ========================== SECRET CODE VERIFY ==========================
 app.post('/api/verify-secret', authMiddleware, async (req, res) => {
     try {
@@ -1039,7 +1198,9 @@ app.post('/api/ads/create', upload.array('images', 5), authMiddleware, async (re
             geo: {
                 lat: req.body.lat ? parseFloat(req.body.lat) : null,
                 lng: req.body.lng ? parseFloat(req.body.lng) : null
-            }
+            },
+            postedBy: null,      // filled below after user lookup
+            postedByEmail: null
         });
 
         await newAd.save();
@@ -1049,6 +1210,10 @@ app.post('/api/ads/create', upload.array('images', 5), authMiddleware, async (re
         if (user) {
             user.points = (user.points || 0) + 4;
             await user.save();
+            // Link ad to poster
+            newAd.postedBy = user._id;
+            newAd.postedByEmail = user.email;
+            await newAd.save();
             console.log(`✅ 4 points awarded for posting ad to: ${user.email}`);
         }
 
@@ -1062,47 +1227,47 @@ app.post('/api/ads/create', upload.array('images', 5), authMiddleware, async (re
                 for (const u of users) {
                     for (const goal of u.goals) {
                         if (goal.notifyMe === 'no') continue;
+
+                        // Category match
                         const catMatch = !goal.category || !newAd.category ||
                             newAd.category.toLowerCase().includes(goal.category.toLowerCase()) ||
                             goal.category.toLowerCase().includes(newAd.category.toLowerCase());
                         if (!catMatch) continue;
+
+                        // Product match
                         const productWords = (goal.product || '').toLowerCase().split(/\s+/).filter(Boolean);
                         const productMatch = productWords.length === 0 || productWords.some(w => adText.includes(w));
                         if (!productMatch) continue;
-                        let budgetMatch = true;
+
+                        // Budget match
                         if (goal.budget) {
                             const userBudget = parseFloat(goal.budget.toString().replace(/[^0-9.]/g, ''));
-                            if (!isNaN(userBudget) && !isNaN(adPrice)) budgetMatch = adPrice <= userBudget;
+                            if (!isNaN(userBudget) && !isNaN(adPrice) && adPrice > userBudget) continue;
                         }
-                        if (!budgetMatch) continue;
 
-                        // Proximity check 10km if ad and user both have location
+                        // Proximity — only filter if BOTH have geo; otherwise still match
                         let distance = null;
                         if (u.location && u.location.latitude && newAd.geo && newAd.geo.lat) {
-                            distance = haversineDistance(u.location.latitude, u.location.longitude, newAd.geo.lat, newAd.geo.lng);
+                            distance = parseFloat(haversineDistance(u.location.latitude, u.location.longitude, newAd.geo.lat, newAd.geo.lng).toFixed(2));
                             if (distance > 10) continue;
                         }
 
                         const exists = await GoalNotification.findOne({ userId: u._id, adId: newAd._id, type: 'match' });
                         if (!exists) {
-                            const distStr = distance ? ` (${distance.toFixed(1)}km away)` : '';
-                            const msg = `🎯 A new listing matches your goal "${goal.product}": "${newAd.title}" at KES ${newAd.price}${distStr}`;
+                            const distStr = distance !== null ? ` (${distance.toFixed(1)}km away)` : '';
+                            const msg = `🎯 New listing matches your goal "${goal.product}": "${newAd.title}" at KES ${newAd.price}${distStr}`;
                             await GoalNotification.create({
                                 userId: u._id, userEmail: u.email, goalId: goal._id, adId: newAd._id,
                                 type: 'match', message: msg,
                                 adTitle: newAd.title, adPrice: newAd.price, adPhone: newAd.phone,
                                 adLocation: newAd.locationName, adCategory: newAd.category,
-                                distance: distance ? parseFloat(distance.toFixed(2)) : null,
-                                read: false
+                                distance, read: false
                             });
                             notifCount++;
-
-                            // Web push (works even when logged out)
                             await sendPushToUser(u, {
                                 title: '🎯 GrowthBase: New Match!',
                                 body: msg,
-                                icon: '/icon-192.png',
-                                badge: '/badge-72.png',
+                                icon: '/icons/icon-192.png',
                                 tag: `match-${newAd._id}`,
                                 data: { type: 'match', adId: newAd._id.toString() }
                             });
@@ -1111,7 +1276,7 @@ app.post('/api/ads/create', upload.array('images', 5), authMiddleware, async (re
                 }
                 if (notifCount > 0) console.log(`🔔 New ad matched ${notifCount} user goals`);
             } catch (e) { console.error('Background goal matching error:', e); }
-        }, 100);
+        }, 200);
 
         return res.status(201).json({
             success: true,
@@ -1149,7 +1314,7 @@ app.post('/api/login', async (req, res) => {
         const token = jwt.sign(
             { id: user._id, email: user.email },
             JWT_SECRET,
-            { expiresIn: '24h' }
+            { expiresIn: '30d' }
         );
 
         // ===== LOGIN POINT LOGIC =====
