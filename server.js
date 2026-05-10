@@ -12,12 +12,22 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const axios = require('axios');
+const webpush = require('web-push');
 
 const PORT = process.env.PORT || 10000;
 const JWT_SECRET = 'trx-infosec-secure-jwt-key-2026-change-in-production';
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://trxinfosec.hkw875.workers.dev";
 const MONGO_URI = process.env.MONGO_URI;
 const CALLBACK_URL = process.env.MPESA_CALLBACK_URL || "https://trx-infosec-backend-vvrq.onrender.com/api/mpesa/callback";
+
+// ========================== WEB PUSH / VAPID SETUP ==========================
+const VAPID_PUBLIC_KEY  = process.env.VAPID_PUBLIC_KEY  || 'BJviSWpIouFw8IuQX_BdMBmuV69ddCnvPhgVJ_9q9ldR4cjsE1JRtEAYcDn4BUNHjfwDuZ2mvUWp-BVzhOao-x4';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'uYy2kzfptROTOK-zyDOtwe87OptFQR3WvczRn62Em7o';
+webpush.setVapidDetails(
+    'mailto:info@growthbase.net',
+    VAPID_PUBLIC_KEY,
+    VAPID_PRIVATE_KEY
+);
 
 // ========================== MIDDLEWARE ==========================
 app.use('/uploads', express.static('uploads'))
@@ -106,7 +116,17 @@ const userSchema = new mongoose.Schema({
       { date: { type: Date, default: Date.now } }
     ],
 
-    referralPhone: { type: String, trim: true }
+    referralPhone: { type: String, trim: true },
+
+    // ===== WEB PUSH SUBSCRIPTIONS =====
+    pushSubscriptions: [{
+        endpoint:   { type: String },
+        keys: {
+            p256dh: { type: String },
+            auth:   { type: String }
+        },
+        createdAt: { type: Date, default: Date.now }
+    }]
 });
 
 const User = mongoose.model('User', userSchema);
@@ -171,22 +191,45 @@ try {
     GoalNotification = mongoose.model('GoalNotification');
 } catch (e) {
     const goalNotificationSchema = new mongoose.Schema({
-        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-        userEmail: { type: String, required: true },
-        goalId: { type: mongoose.Schema.Types.ObjectId },
-        adId: { type: mongoose.Schema.Types.ObjectId, ref: 'Advert' },
-        type: { type: String, enum: ['match', 'proximity'], required: true },
-        message: { type: String, required: true },
-        adTitle: { type: String },
-        adPrice: { type: String },
-        adPhone: { type: String },
-        adLocation: { type: String },
-        adCategory: { type: String },
-        distance: { type: Number }, // km, for proximity alerts
-        read: { type: Boolean, default: false },
-        createdAt: { type: Date, default: Date.now }
+        userId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        userEmail:   { type: String, required: true },
+        goalId:      { type: mongoose.Schema.Types.ObjectId },
+        adId:        { type: mongoose.Schema.Types.ObjectId, ref: 'Advert' },
+        type:        { type: String, enum: ['match', 'proximity'], required: true },
+        message:     { type: String, required: true },
+        adTitle:     { type: String },
+        adPrice:     { type: String },
+        adPhone:     { type: String },
+        adLocation:  { type: String },
+        adCategory:  { type: String },
+        distance:    { type: Number },
+        read:        { type: Boolean, default: false },
+        createdAt:   { type: Date, default: Date.now }
     });
     GoalNotification = mongoose.model('GoalNotification', goalNotificationSchema);
+}
+
+// ========================== SELLER NOTIFICATION MODEL ==========================
+// Notifies ad-posters when a new Goal in their category is submitted nearby (within 10km)
+let SellerNotification;
+try {
+    SellerNotification = mongoose.model('SellerNotification');
+} catch (e) {
+    const sellerNotificationSchema = new mongoose.Schema({
+        sellerId:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        sellerEmail:  { type: String, required: true },
+        adId:         { type: mongoose.Schema.Types.ObjectId, ref: 'Advert' },
+        goalId:       { type: mongoose.Schema.Types.ObjectId },
+        message:      { type: String, required: true },
+        goalProduct:  { type: String },
+        goalBudget:   { type: String },
+        goalCategory: { type: String },
+        buyerLocation:{ type: String },
+        distance:     { type: Number },
+        read:         { type: Boolean, default: false },
+        createdAt:    { type: Date, default: Date.now }
+    });
+    SellerNotification = mongoose.model('SellerNotification', sellerNotificationSchema);
 }
 
 // ========================== MULTER SETUP ==========================
@@ -273,6 +316,31 @@ const authMiddleware = (req, res, next) => {
     }
 };
 
+// ========================== WEB PUSH HELPER ==========================
+// Send a push notification to all subscriptions stored for a user.
+// Cleans up expired/invalid subscriptions automatically.
+async function sendPushToUser(user, payload) {
+    if (!user.pushSubscriptions || user.pushSubscriptions.length === 0) return;
+    const toRemove = [];
+    for (const sub of user.pushSubscriptions) {
+        try {
+            await webpush.sendNotification(
+                { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } },
+                JSON.stringify(payload),
+                { TTL: 86400 } // keep queued for up to 24 h
+            );
+        } catch (err) {
+            if (err.statusCode === 410 || err.statusCode === 404) {
+                toRemove.push(sub.endpoint); // subscription expired
+            }
+        }
+    }
+    if (toRemove.length) {
+        user.pushSubscriptions = user.pushSubscriptions.filter(s => !toRemove.includes(s.endpoint));
+        await user.save();
+    }
+}
+
 // ========================== GOAL MATCHING HELPER ==========================
 // Haversine formula to calculate distance between two lat/lng points in km
 function haversineDistance(lat1, lon1, lat2, lon2) {
@@ -285,14 +353,14 @@ function haversineDistance(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-// Match a single goal against all ads and create notifications for matches
-async function matchGoalToAds(goal, userId, userEmail) {
+// Match a single goal against all ads, create in-app + push notifications
+async function matchGoalToAds(goal, userId, userEmail, userLat, userLng) {
     try {
         const query = {};
         if (goal.category) query.category = { $regex: new RegExp(goal.category, 'i') };
 
         const ads = await Advert.find(query);
-        const matches = [];
+        let matchCount = 0;
 
         for (const ad of ads) {
             // Product keyword match
@@ -305,36 +373,47 @@ async function matchGoalToAds(goal, userId, userEmail) {
             if (goal.budget) {
                 const userBudget = parseFloat(goal.budget.toString().replace(/[^0-9.]/g, ''));
                 const adPrice = parseFloat((ad.price || '0').toString().replace(/[^0-9.]/g, ''));
-                if (!isNaN(userBudget) && !isNaN(adPrice)) {
-                    budgetMatch = adPrice <= userBudget;
-                }
+                if (!isNaN(userBudget) && !isNaN(adPrice)) budgetMatch = adPrice <= userBudget;
             }
 
-            if (productMatch && budgetMatch) {
-                // Check if notification already exists
-                const exists = await GoalNotification.findOne({
-                    userId, adId: ad._id, type: 'match'
-                });
+            // Proximity match (10km) if user location known
+            let proximityOk = true;
+            let distance = null;
+            if (userLat && userLng && ad.geo && ad.geo.lat && ad.geo.lng) {
+                distance = haversineDistance(userLat, userLng, ad.geo.lat, ad.geo.lng);
+                proximityOk = distance <= 10;
+            }
+
+            if (productMatch && budgetMatch && proximityOk) {
+                const exists = await GoalNotification.findOne({ userId, adId: ad._id, type: 'match' });
                 if (!exists) {
-                    matches.push(ad);
+                    const msg = `🎯 A match for your goal "${goal.product}" was found: "${ad.title}" at KES ${ad.price}${distance ? ` (${distance.toFixed(1)}km away)` : ''}`;
                     await GoalNotification.create({
-                        userId,
-                        userEmail,
-                        goalId: goal._id,
-                        adId: ad._id,
-                        type: 'match',
-                        message: `🎯 A match for your goal "${goal.product}" was found: "${ad.title}" at KES ${ad.price}`,
-                        adTitle: ad.title,
-                        adPrice: ad.price,
-                        adPhone: ad.phone,
-                        adLocation: ad.locationName,
-                        adCategory: ad.category,
+                        userId, userEmail, goalId: goal._id, adId: ad._id,
+                        type: 'match', message: msg,
+                        adTitle: ad.title, adPrice: ad.price, adPhone: ad.phone,
+                        adLocation: ad.locationName, adCategory: ad.category,
+                        distance: distance ? parseFloat(distance.toFixed(2)) : null,
                         read: false
                     });
+                    matchCount++;
+
+                    // Send web push (works even when user is logged out)
+                    const userDoc = await User.findById(userId).select('pushSubscriptions');
+                    if (userDoc) {
+                        await sendPushToUser(userDoc, {
+                            title: '🎯 GrowthBase Match Found!',
+                            body: msg,
+                            icon: '/icon-192.png',
+                            badge: '/badge-72.png',
+                            tag: `match-${ad._id}`,
+                            data: { type: 'match', adId: ad._id.toString() }
+                        });
+                    }
                 }
             }
         }
-        return matches.length;
+        return matchCount;
     } catch (err) {
         console.error('Goal matching error:', err);
         return 0;
@@ -342,10 +421,10 @@ async function matchGoalToAds(goal, userId, userEmail) {
 }
 
 // ========================== MY GOAL ROUTE ==========================
-// POST /api/goals — saves a user goal and immediately checks for matches
+// POST /api/goals — saves a user goal, checks buyer matches, AND notifies nearby sellers
 app.post('/api/goals', async (req, res) => {
     try {
-        const { product, category, budget, desiredDate, notifyMe } = req.body;
+        const { product, category, budget, desiredDate, notifyMe, latitude, longitude } = req.body;
 
         if (!product) {
             return res.status(400).json({ msg: 'Product or service name is required.' });
@@ -360,16 +439,24 @@ app.post('/api/goals', async (req, res) => {
                 const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
                 const user = await User.findOne({ email: decoded.email });
                 if (user) {
+                    // Use freshest location: body > stored
+                    const userLat = latitude || (user.location && user.location.latitude);
+                    const userLng = longitude || (user.location && user.location.longitude);
+
                     user.goals.push(goalData);
                     await user.save();
                     const savedGoal = user.goals[user.goals.length - 1];
                     console.log(`✅ Goal saved to user profile: ${decoded.email}`);
 
-                    // Run matching in background
+                    // Background: match buyer goals to existing ads + notify sellers
                     if (notifyMe !== 'no') {
-                        matchGoalToAds(savedGoal, user._id, user.email).then(count => {
-                            if (count > 0) console.log(`🔔 ${count} match notification(s) created for ${user.email}`);
+                        // 1. Notify this buyer of matching ads
+                        matchGoalToAds(savedGoal, user._id, user.email, userLat, userLng).then(count => {
+                            if (count > 0) console.log(`🔔 ${count} buyer match notification(s) for ${user.email}`);
                         });
+
+                        // 2. Notify sellers who have ads in the same category within 10km
+                        notifySellersOfNewGoal(savedGoal, user._id, user.email, userLat, userLng);
                     }
 
                     return res.status(201).json({ msg: 'Goal saved! We\'ll notify you when a match is found.' });
@@ -379,9 +466,15 @@ app.post('/api/goals', async (req, res) => {
             }
         }
 
-        // Anonymous: save to standalone Goal collection
+        // Anonymous goal
         const newGoal = new Goal({ ...goalData, userEmail: null });
         await newGoal.save();
+
+        // Still notify sellers for anonymous goals if location provided
+        if (latitude && longitude && notifyMe !== 'no') {
+            notifySellersOfNewGoal(newGoal, null, 'Anonymous', latitude, longitude);
+        }
+
         console.log(`✅ Anonymous goal saved: ${product}`);
         return res.status(201).json({ msg: 'Goal saved successfully.' });
 
@@ -390,6 +483,85 @@ app.post('/api/goals', async (req, res) => {
         res.status(500).json({ msg: 'Failed to save goal. Please try again.' });
     }
 });
+
+// ========================== SELLER NOTIFICATION HELPER ==========================
+// When a new "My Goal" is submitted, find sellers with ads in the same category
+// within 10km of the buyer's location and create/push a SellerNotification.
+async function notifySellersOfNewGoal(goal, buyerId, buyerEmail, buyerLat, buyerLng) {
+    try {
+        // Find all ads in matching category
+        const catQuery = goal.category
+            ? { category: { $regex: new RegExp(goal.category, 'i') } }
+            : {};
+        const ads = await Advert.find(catQuery);
+
+        // Group ads by poster phone (seller identifier — no user linkage on ads yet)
+        // We match ads with geo data and find users who own them via phone number
+        for (const ad of ads) {
+            // Proximity check — only do it if both the ad and buyer have location
+            let distance = null;
+            if (buyerLat && buyerLng && ad.geo && ad.geo.lat && ad.geo.lng) {
+                distance = haversineDistance(buyerLat, buyerLng, ad.geo.lat, ad.geo.lng);
+                if (distance > 10) continue; // outside 10km
+            }
+
+            // Find the seller user by matching their phone number to the ad's contact phone
+            if (!ad.phone) continue;
+            const seller = await User.findOne({
+                $or: [
+                    { mobileNumber: ad.phone },
+                    { phone: ad.phone }
+                ]
+            }).select('_id email pushSubscriptions');
+
+            if (!seller) continue;
+            // Don't notify a buyer about their own ad
+            if (buyerId && seller._id.toString() === buyerId.toString()) continue;
+
+            // Deduplicate — one seller notification per (seller, goal) pair per 24h
+            const goalIdStr = goal._id ? goal._id.toString() : `${goal.product}-${goal.category}`;
+            const recentSellerNotif = await SellerNotification.findOne({
+                sellerId: seller._id,
+                'goalProduct': goal.product,
+                'goalCategory': goal.category,
+                createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+            });
+            if (recentSellerNotif) continue;
+
+            const distStr = distance ? ` (${distance.toFixed(1)}km away)` : '';
+            const budgetStr = goal.budget ? ` Budget: KES ${goal.budget}.` : '';
+            const msg = `🛒 New buyer goal in your category "${ad.category}"! Someone is looking for "${goal.product}".${budgetStr}${distStr} Contact them via GrowthBase.`;
+
+            await SellerNotification.create({
+                sellerId: seller._id,
+                sellerEmail: seller.email,
+                adId: ad._id,
+                goalId: goal._id || null,
+                message: msg,
+                goalProduct: goal.product,
+                goalBudget: goal.budget,
+                goalCategory: goal.category,
+                buyerLocation: buyerLat ? `${buyerLat.toFixed(4)},${buyerLng.toFixed(4)}` : null,
+                distance: distance ? parseFloat(distance.toFixed(2)) : null,
+                read: false
+            });
+
+            // Send web push to seller (works even if logged out)
+            await sendPushToUser(seller, {
+                title: '🛒 New Buyer Near You!',
+                body: msg,
+                icon: '/icon-192.png',
+                badge: '/badge-72.png',
+                tag: `seller-goal-${ad._id}-${Date.now()}`,
+                data: { type: 'seller_goal', adId: ad._id.toString() }
+            });
+
+            console.log(`🔔 Seller ${seller.email} notified of new goal: ${goal.product}`);
+        }
+    } catch (err) {
+        console.error('Seller notification error:', err);
+    }
+}
 
 // GET /api/goals — retrieve goals for authenticated user
 app.get('/api/goals', authMiddleware, async (req, res) => {
@@ -442,8 +614,115 @@ app.post('/api/notifications/mark-read/:id', authMiddleware, async (req, res) =>
     }
 });
 
+// ========================== SELLER NOTIFICATIONS ROUTES ==========================
+app.get('/api/seller-notifications', authMiddleware, async (req, res) => {
+    try {
+        const user = await User.findOne({ email: req.user.email });
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+        const notifications = await SellerNotification.find({ sellerId: user._id })
+            .sort({ createdAt: -1 }).limit(50);
+        const unreadCount = notifications.filter(n => !n.read).length;
+        res.json({ notifications, unreadCount });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to retrieve seller notifications.' });
+    }
+});
+
+app.post('/api/seller-notifications/mark-read', authMiddleware, async (req, res) => {
+    try {
+        const user = await User.findOne({ email: req.user.email });
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+        await SellerNotification.updateMany({ sellerId: user._id, read: false }, { read: true });
+        res.json({ msg: 'All seller notifications marked as read.' });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to mark notifications.' });
+    }
+});
+
+app.post('/api/seller-notifications/mark-read/:id', authMiddleware, async (req, res) => {
+    try {
+        await SellerNotification.findByIdAndUpdate(req.params.id, { read: true });
+        res.json({ msg: 'Seller notification marked as read.' });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to mark notification.' });
+    }
+});
+
+// ========================== COMBINED NOTIFICATIONS (buyer + seller) ==========================
+app.get('/api/all-notifications', authMiddleware, async (req, res) => {
+    try {
+        const user = await User.findOne({ email: req.user.email });
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+
+        const [buyerNotifs, sellerNotifs] = await Promise.all([
+            GoalNotification.find({ userId: user._id }).sort({ createdAt: -1 }).limit(30),
+            SellerNotification.find({ sellerId: user._id }).sort({ createdAt: -1 }).limit(30)
+        ]);
+
+        // Merge and sort by date
+        const merged = [
+            ...buyerNotifs.map(n => ({ ...n.toObject(), notifRole: 'buyer' })),
+            ...sellerNotifs.map(n => ({ ...n.toObject(), notifRole: 'seller' }))
+        ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 50);
+
+        const unreadCount = merged.filter(n => !n.read).length;
+        res.json({ notifications: merged, unreadCount });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to retrieve notifications.' });
+    }
+});
+
+// ========================== WEB PUSH SUBSCRIPTION ROUTES ==========================
+// GET /api/push/vapid-public-key — return VAPID public key for client
+app.get('/api/push/vapid-public-key', (req, res) => {
+    res.json({ publicKey: VAPID_PUBLIC_KEY });
+});
+
+// POST /api/push/subscribe — save push subscription (works when logged in or out via guest token)
+app.post('/api/push/subscribe', authMiddleware, async (req, res) => {
+    try {
+        const { subscription } = req.body;
+        if (!subscription || !subscription.endpoint) {
+            return res.status(400).json({ msg: 'Invalid subscription object.' });
+        }
+        const user = await User.findOne({ email: req.user.email });
+        if (!user) return res.status(404).json({ msg: 'User not found.' });
+
+        // Avoid duplicates
+        const exists = user.pushSubscriptions.some(s => s.endpoint === subscription.endpoint);
+        if (!exists) {
+            user.pushSubscriptions.push({
+                endpoint: subscription.endpoint,
+                keys: {
+                    p256dh: subscription.keys.p256dh,
+                    auth: subscription.keys.auth
+                }
+            });
+            await user.save();
+        }
+        res.json({ msg: 'Push subscription saved.' });
+    } catch (err) {
+        console.error('Push subscribe error:', err);
+        res.status(500).json({ msg: 'Failed to save push subscription.' });
+    }
+});
+
+// POST /api/push/unsubscribe — remove a push subscription on logout
+app.post('/api/push/unsubscribe', authMiddleware, async (req, res) => {
+    try {
+        const { endpoint } = req.body;
+        const user = await User.findOne({ email: req.user.email });
+        if (!user) return res.status(404).json({ msg: 'User not found.' });
+        user.pushSubscriptions = user.pushSubscriptions.filter(s => s.endpoint !== endpoint);
+        await user.save();
+        res.json({ msg: 'Subscription removed.' });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to remove subscription.' });
+    }
+});
+
 // POST /api/proximity-check — called by frontend when user location changes
-// Checks user's goals vs nearby ads (within 2km)
+// Checks user's goals vs nearby ads (within 10km)
 app.post('/api/proximity-check', authMiddleware, async (req, res) => {
     try {
         const { latitude, longitude } = req.body;
@@ -469,8 +748,8 @@ app.post('/api/proximity-check', authMiddleware, async (req, res) => {
                     !goal.category.toLowerCase().includes(ad.category.toLowerCase())) continue;
 
                 const distance = haversineDistance(latitude, longitude, ad.geo.lat, ad.geo.lng);
-                if (distance <= 2) {
-                    // Check if proximity notification already exists recently (within 24h)
+                if (distance <= 10) {  // Changed from 2km to 10km
+                    // Deduplicate: one proximity alert per ad per 24h per user
                     const recentAlert = await GoalNotification.findOne({
                         userId: user._id,
                         adId: ad._id,
@@ -478,13 +757,14 @@ app.post('/api/proximity-check', authMiddleware, async (req, res) => {
                         createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
                     });
                     if (!recentAlert) {
+                        const msg = `📍 You're ${distance.toFixed(1)}km from a seller matching your goal "${goal.product}": "${ad.title}" at KES ${ad.price}`;
                         await GoalNotification.create({
                             userId: user._id,
                             userEmail: user.email,
                             goalId: goal._id,
                             adId: ad._id,
                             type: 'proximity',
-                            message: `📍 You're ${distance.toFixed(1)}km from a seller matching your goal "${goal.product}": "${ad.title}" at KES ${ad.price}`,
+                            message: msg,
                             adTitle: ad.title,
                             adPrice: ad.price,
                             adPhone: ad.phone,
@@ -494,6 +774,16 @@ app.post('/api/proximity-check', authMiddleware, async (req, res) => {
                             read: false
                         });
                         alertCount++;
+
+                        // Push notification (works when logged out)
+                        await sendPushToUser(user, {
+                            title: '📍 GrowthBase: Seller Nearby!',
+                            body: msg,
+                            icon: '/icon-192.png',
+                            badge: '/badge-72.png',
+                            tag: `proximity-${ad._id}`,
+                            data: { type: 'proximity', adId: ad._id.toString() }
+                        });
                     }
                 }
             }
@@ -767,7 +1057,7 @@ app.post('/api/ads/create', upload.array('images', 5), authMiddleware, async (re
             try {
                 const adPrice = parseFloat((newAd.price || '0').replace(/[^0-9.]/g, ''));
                 const adText = `${newAd.title} ${newAd.description} ${newAd.category}`.toLowerCase();
-                const users = await User.find({ 'goals.0': { $exists: true } }).select('_id email goals');
+                const users = await User.find({ 'goals.0': { $exists: true } }).select('_id email goals location pushSubscriptions');
                 let notifCount = 0;
                 for (const u of users) {
                     for (const goal of u.goals) {
@@ -785,16 +1075,37 @@ app.post('/api/ads/create', upload.array('images', 5), authMiddleware, async (re
                             if (!isNaN(userBudget) && !isNaN(adPrice)) budgetMatch = adPrice <= userBudget;
                         }
                         if (!budgetMatch) continue;
+
+                        // Proximity check 10km if ad and user both have location
+                        let distance = null;
+                        if (u.location && u.location.latitude && newAd.geo && newAd.geo.lat) {
+                            distance = haversineDistance(u.location.latitude, u.location.longitude, newAd.geo.lat, newAd.geo.lng);
+                            if (distance > 10) continue;
+                        }
+
                         const exists = await GoalNotification.findOne({ userId: u._id, adId: newAd._id, type: 'match' });
                         if (!exists) {
+                            const distStr = distance ? ` (${distance.toFixed(1)}km away)` : '';
+                            const msg = `🎯 A new listing matches your goal "${goal.product}": "${newAd.title}" at KES ${newAd.price}${distStr}`;
                             await GoalNotification.create({
                                 userId: u._id, userEmail: u.email, goalId: goal._id, adId: newAd._id,
-                                type: 'match',
-                                message: `🎯 A new listing matches your goal "${goal.product}": "${newAd.title}" at KES ${newAd.price}`,
+                                type: 'match', message: msg,
                                 adTitle: newAd.title, adPrice: newAd.price, adPhone: newAd.phone,
-                                adLocation: newAd.locationName, adCategory: newAd.category, read: false
+                                adLocation: newAd.locationName, adCategory: newAd.category,
+                                distance: distance ? parseFloat(distance.toFixed(2)) : null,
+                                read: false
                             });
                             notifCount++;
+
+                            // Web push (works even when logged out)
+                            await sendPushToUser(u, {
+                                title: '🎯 GrowthBase: New Match!',
+                                body: msg,
+                                icon: '/icon-192.png',
+                                badge: '/badge-72.png',
+                                tag: `match-${newAd._id}`,
+                                data: { type: 'match', adId: newAd._id.toString() }
+                            });
                         }
                     }
                 }
