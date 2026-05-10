@@ -898,7 +898,6 @@ app.get('/api/ads/:id/poster', authMiddleware, async (req, res) => {
         const ad = await Advert.findById(req.params.id).select('title postedBy postedByEmail phone category price');
         if (!ad) return res.status(404).json({ msg: 'Ad not found' });
 
-        // Try to resolve poster by stored postedBy, then by phone
         let posterName = 'Seller';
         let posterId = ad.postedBy;
         let posterEmail = ad.postedByEmail;
@@ -923,13 +922,54 @@ app.get('/api/ads/:id/poster', authMiddleware, async (req, res) => {
     }
 });
 
-// GET /api/chat/:roomId — get all messages for a room
+// ⚠️ CRITICAL: /api/chat/rooms/mine MUST be defined BEFORE /api/chat/:roomId
+// Express matches routes in registration order — :roomId would capture "rooms" otherwise.
+
+// GET /api/chat/rooms/mine — list all chat rooms this user is in
+app.get('/api/chat/rooms/mine', authMiddleware, async (req, res) => {
+    try {
+        const user = await User.findOne({ email: req.user.email });
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+
+        const messages = await ChatMessage.find({
+            $or: [{ senderId: user._id }, { receiverId: user._id }]
+        }).sort({ createdAt: -1 });
+
+        const roomMap = {};
+        for (const msg of messages) {
+            if (!roomMap[msg.roomId]) {
+                const isSender = msg.senderId.toString() === user._id.toString();
+                roomMap[msg.roomId] = {
+                    roomId:      msg.roomId,
+                    adId:        msg.adId,
+                    adTitle:     msg.adTitle,
+                    lastMessage: msg.message,
+                    lastAt:      msg.createdAt,
+                    otherEmail:  isSender ? msg.receiverEmail : msg.senderEmail,
+                    otherName:   isSender ? (msg.receiverEmail || 'User') : (msg.senderName || msg.senderEmail),
+                    otherId:     isSender ? msg.receiverId : msg.senderId,
+                    unread: 0
+                };
+            }
+            if (!msg.read && msg.receiverId && msg.receiverId.toString() === user._id.toString()) {
+                roomMap[msg.roomId].unread++;
+            }
+        }
+
+        const rooms = Object.values(roomMap).sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
+        const totalUnread = rooms.reduce((sum, r) => sum + r.unread, 0);
+        res.json({ rooms, totalUnread });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to load chat rooms' });
+    }
+});
+
+// GET /api/chat/:roomId — get all messages for a room (registered AFTER rooms/mine)
 app.get('/api/chat/:roomId', authMiddleware, async (req, res) => {
     try {
         const messages = await ChatMessage.find({ roomId: req.params.roomId })
             .sort({ createdAt: 1 }).limit(100);
 
-        // Mark messages from other user as read
         const user = await User.findOne({ email: req.user.email });
         if (user) {
             await ChatMessage.updateMany(
@@ -955,27 +995,26 @@ app.post('/api/chat/send', authMiddleware, async (req, res) => {
 
         const newMsg = await ChatMessage.create({
             roomId,
-            adId: adId || null,
-            adTitle: adTitle || null,
-            senderId: sender._id,
-            senderEmail: sender.email,
-            senderName: sender.fullName || sender.email,
-            receiverId: receiverId || null,
+            adId:          adId || null,
+            adTitle:       adTitle || null,
+            senderId:      sender._id,
+            senderEmail:   sender.email,
+            senderName:    sender.fullName || sender.email,
+            receiverId:    receiverId || null,
             receiverEmail: receiverEmail || null,
-            message: message.trim(),
+            message:       message.trim(),
             read: false
         });
 
-        // Push notify the receiver
         if (receiverId) {
             const receiver = await User.findById(receiverId).select('pushSubscriptions');
             if (receiver) {
                 await sendPushToUser(receiver, {
-                    title: `💬 New message from ${sender.fullName || sender.email}`,
-                    body: message.trim().slice(0, 100),
-                    icon: '/icons/icon-192.png',
-                    tag: `chat-${roomId}`,
-                    data: { type: 'chat', roomId, adId: adId || '' }
+                    title: `💬 Message from ${sender.fullName || sender.email}`,
+                    body:  message.trim().slice(0, 120),
+                    icon:  '/icons/icon-192.png',
+                    tag:   `chat-${roomId}`,
+                    data:  { type: 'chat', roomId, adId: adId || '' }
                 });
             }
         }
@@ -984,46 +1023,6 @@ app.post('/api/chat/send', authMiddleware, async (req, res) => {
     } catch (err) {
         console.error('Chat send error:', err);
         res.status(500).json({ msg: 'Failed to send message' });
-    }
-});
-
-// GET /api/chat/rooms/mine — list all chat rooms this user is in, with last message + unread count
-app.get('/api/chat/rooms/mine', authMiddleware, async (req, res) => {
-    try {
-        const user = await User.findOne({ email: req.user.email });
-        if (!user) return res.status(404).json({ msg: 'User not found' });
-
-        // Find all rooms where this user is sender or receiver
-        const messages = await ChatMessage.find({
-            $or: [{ senderId: user._id }, { receiverId: user._id }]
-        }).sort({ createdAt: -1 });
-
-        // Group by roomId
-        const roomMap = {};
-        for (const msg of messages) {
-            if (!roomMap[msg.roomId]) {
-                roomMap[msg.roomId] = {
-                    roomId: msg.roomId,
-                    adId: msg.adId,
-                    adTitle: msg.adTitle,
-                    lastMessage: msg.message,
-                    lastAt: msg.createdAt,
-                    otherEmail: msg.senderId.toString() === user._id.toString() ? msg.receiverEmail : msg.senderEmail,
-                    otherName: msg.senderId.toString() === user._id.toString() ? (msg.receiverEmail || 'User') : (msg.senderName || msg.senderEmail),
-                    otherId: msg.senderId.toString() === user._id.toString() ? msg.receiverId : msg.senderId,
-                    unread: 0
-                };
-            }
-            if (!msg.read && msg.receiverId && msg.receiverId.toString() === user._id.toString()) {
-                roomMap[msg.roomId].unread++;
-            }
-        }
-
-        const rooms = Object.values(roomMap).sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
-        const totalUnread = rooms.reduce((sum, r) => sum + r.unread, 0);
-        res.json({ rooms, totalUnread });
-    } catch (err) {
-        res.status(500).json({ msg: 'Failed to load chat rooms' });
     }
 });
 
