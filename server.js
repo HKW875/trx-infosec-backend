@@ -1227,17 +1227,11 @@ app.post('/api/register', async (req, res) => {
         if (referralEmail) {
             // Most reliable: match by the referrer's email address
             const emailQuery = { email: referralEmail.toLowerCase().trim() };
-            if (referralPhone) emailQuery.mobileNumber = referralPhone.trim();
+            
             referrer = await User.findOne(emailQuery);
         }
 
-        if (!referrer && referredBy && referralPhone) {
-            // Legacy fallback: match by full name + phone (only works if referrer has set fullName in profile)
-            referrer = await User.findOne({
-                fullName: { $regex: new RegExp('^' + referredBy.trim() + '$', 'i') },
-                mobileNumber: referralPhone.trim()
-            });
-        }
+        
 
         if (referrer) {
             // Prevent self-referral
