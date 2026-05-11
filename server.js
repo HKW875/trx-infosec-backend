@@ -1183,7 +1183,7 @@ app.get('/api/occupations-stats', authMiddleware, async (req, res) => {
 
 // ========================== AUTH ROUTES ==========================
 app.post('/api/register', async (req, res) => {
-    const { email, password, mobileNumber, occupation, referredBy, referralPhone, confirmPassword, secretCode } = req.body;
+    const { email, password, mobileNumber, occupation, referredBy, referralPhone, referralEmail, confirmPassword, secretCode } = req.body;
     try {
         console.log('Register attempt for email:', email);
         if (!email || !password || !mobileNumber || !occupation || !confirmPassword || !secretCode) {
@@ -1220,17 +1220,34 @@ app.post('/api/register', async (req, res) => {
         await user.save();
 
         // ===== REFERRAL POINTS CREDITING =====
-        if (referredBy && referralPhone) {
-            const referrer = await User.findOne({
-                fullName: { $regex: new RegExp('^' + referredBy + '$', 'i') },
-                mobileNumber: referralPhone
-            });
+        // Primary lookup: by referralEmail + mobileNumber (most reliable — email is unique and set at registration)
+        // Fallback: by fullName + mobileNumber (legacy, for referrers who have set their full name in profile)
+        let referrer = null;
 
-            if (referrer) {
+        if (referralEmail) {
+            // Most reliable: match by the referrer's email address
+            const emailQuery = { email: referralEmail.toLowerCase().trim() };
+            if (referralPhone) emailQuery.mobileNumber = referralPhone.trim();
+            referrer = await User.findOne(emailQuery);
+        }
+
+        if (!referrer && referredBy && referralPhone) {
+            // Legacy fallback: match by full name + phone (only works if referrer has set fullName in profile)
+            referrer = await User.findOne({
+                fullName: { $regex: new RegExp('^' + referredBy.trim() + '$', 'i') },
+                mobileNumber: referralPhone.trim()
+            });
+        }
+
+        if (referrer) {
+            // Prevent self-referral
+            if (referrer.email !== email) {
                 referrer.points = (referrer.points || 0) + 5;
                 await referrer.save();
                 console.log(`✅ 5 points credited to referrer: ${referrer.email}`);
             }
+        } else {
+            console.log(`ℹ️  No referrer found for referralEmail="${referralEmail}" referredBy="${referredBy}" referralPhone="${referralPhone}"`);
         }
 
         console.log('User registered successfully:', email);
