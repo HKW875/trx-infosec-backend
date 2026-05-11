@@ -371,6 +371,46 @@ async function sendPushToUser(user, payload) {
     }
 }
 
+// ========================== ADMIN NOTIFICATION HELPER ==========================
+// Sends an in-app notification + web push to wambuguhkw@gmail.com
+// whenever any user submits a Goal or a new Ad.
+const ADMIN_EMAIL = 'wambuguhkw@gmail.com';
+
+async function notifyAdmin(title, body, tag) {
+    try {
+        const admin = await User.findOne({ email: ADMIN_EMAIL })
+            .select('_id email pushSubscriptions');
+        if (!admin) {
+            console.warn(`⚠️  Admin user ${ADMIN_EMAIL} not found — skipping admin notification`);
+            return;
+        }
+
+        // 1. Persist as an in-app GoalNotification so it appears in the bell panel
+        await GoalNotification.create({
+            userId:    admin._id,
+            userEmail: admin.email,
+            type:      'match',          // reuse existing type; renders fine in the panel
+            message:   body,
+            adTitle:   title,
+            read:      false
+        });
+
+        // 2. Fire web push (works even when admin tab is closed)
+        await sendPushToUser(admin, {
+            title,
+            body,
+            icon:  '/icons/icon-192.png',
+            badge: '/badge-72.png',
+            tag,
+            data:  { type: 'admin_alert' }
+        });
+
+        console.log(`🔔 Admin notified: ${title}`);
+    } catch (err) {
+        console.error('notifyAdmin error:', err);
+    }
+}
+
 // ========================== GOAL MATCHING HELPER ==========================
 // Haversine formula to calculate distance between two lat/lng points in km
 function haversineDistance(lat1, lon1, lat2, lon2) {
@@ -477,6 +517,19 @@ app.post('/api/goals', async (req, res) => {
                     const savedGoal = user.goals[user.goals.length - 1];
                     console.log(`✅ Goal saved to user profile: ${decoded.email}`);
 
+                    // ===== NOTIFY ADMIN OF NEW GOAL SUBMISSION =====
+                    const goalDate    = desiredDate ? ` | Desired by: ${desiredDate}` : '';
+                    const goalBudget  = budget      ? ` | Budget: KES ${budget}`       : '';
+                    const goalCat     = category    ? ` | Category: ${category}`       : '';
+                    const goalNotify  = notifyMe    ? ` | Notify me: ${notifyMe}`      : '';
+                    const adminGoalBody = `📋 New Goal Submitted\nUser: ${decoded.email}\nProduct: ${product}${goalCat}${goalBudget}${goalDate}${goalNotify}`;
+                    notifyAdmin(
+                        '🎯 New Goal Submitted',
+                        adminGoalBody,
+                        `admin-goal-${savedGoal._id}`
+                    );
+                    // ===============================================
+
                     // Background: match buyer goals to existing ads + notify sellers
                     if (notifyMe !== 'no') {
                         // 1. Notify this buyer of matching ads
@@ -498,6 +551,19 @@ app.post('/api/goals', async (req, res) => {
         // Anonymous goal
         const newGoal = new Goal({ ...goalData, userEmail: null });
         await newGoal.save();
+
+        // ===== NOTIFY ADMIN OF ANONYMOUS GOAL SUBMISSION =====
+        const anonDate    = desiredDate ? ` | Desired by: ${desiredDate}` : '';
+        const anonBudget  = budget      ? ` | Budget: KES ${budget}`       : '';
+        const anonCat     = category    ? ` | Category: ${category}`       : '';
+        const anonNotify  = notifyMe    ? ` | Notify me: ${notifyMe}`      : '';
+        const anonGoalBody = `📋 New Anonymous Goal Submitted\nProduct: ${product}${anonCat}${anonBudget}${anonDate}${anonNotify}`;
+        notifyAdmin(
+            '🎯 New Goal Submitted (Anonymous)',
+            anonGoalBody,
+            `admin-goal-anon-${newGoal._id}`
+        );
+        // =====================================================
 
         // Still notify sellers for anonymous goals if location provided
         if (latitude && longitude && notifyMe !== 'no') {
@@ -1215,6 +1281,21 @@ app.post('/api/ads/create', upload.array('images', 5), authMiddleware, async (re
             await newAd.save();
             console.log(`✅ 4 points awarded for posting ad to: ${user.email}`);
         }
+
+        // ===== NOTIFY ADMIN OF NEW AD SUBMISSION =====
+        const adCondition  = req.body.condition  ? ` | Condition: ${req.body.condition}`   : '';
+        const adLocation   = req.body.locationName ? ` | Location: ${req.body.locationName}` : '';
+        const adPhone      = req.body.phone      ? ` | Phone: ${req.body.phone}`           : '';
+        const adDesc       = req.body.description ? ` | Description: ${req.body.description.slice(0, 120)}` : '';
+        const adCategory   = req.body.category   ? ` | Category: ${req.body.category}`     : '';
+        const adPostedBy   = req.user.email;
+        const adminAdBody  = `📢 New Ad Posted\nUser: ${adPostedBy}\nTitle: ${req.body.title}\nPrice: KES ${req.body.price}${adCategory}${adCondition}${adLocation}${adPhone}${adDesc}`;
+        notifyAdmin(
+            '📢 New Ad Posted',
+            adminAdBody,
+            `admin-ad-${newAd._id}`
+        );
+        // =============================================
 
         // Trigger goal matching for this new ad (background, non-blocking)
         setTimeout(async () => {
