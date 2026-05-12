@@ -125,6 +125,9 @@ const userSchema = new mongoose.Schema({
 
     referralPhone: { type: String, trim: true },
 
+    // ===== PROFILE PHOTO (base64 or CDN URL) =====
+    profilePhoto: { type: String, default: null },
+
     // ===== WEB PUSH SUBSCRIPTIONS =====
     pushSubscriptions: [{
         endpoint:   { type: String },
@@ -159,6 +162,8 @@ try {
         },
         postedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
         postedByEmail: { type: String, default: null },
+        postedByName:  { type: String, default: null },
+        postedByPhoto: { type: String, default: null },
         createdAt: { type: Date, default: Date.now }
     });
     Advert = mongoose.model('Advert', advertSchema);
@@ -315,9 +320,37 @@ app.get('/api/ads', async (req, res) => {
         }
 
         const ads = await Advert.find(query).sort({ createdAt: -1 });
-        res.json({ data: ads });
+
+        // Enrich each ad with live poster name + photo (fast: uses stored fields first)
+        const enriched = await Promise.all(ads.map(async (ad) => {
+            const obj = ad.toObject();
+            if (!obj.postedByName && obj.postedBy) {
+                try {
+                    const poster = await User.findById(obj.postedBy).select('fullName profilePhoto');
+                    if (poster) {
+                        obj.postedByName  = poster.fullName  || null;
+                        obj.postedByPhoto = poster.profilePhoto || null;
+                    }
+                } catch (e) { /* skip silently */ }
+            }
+            return obj;
+        }));
+
+        res.json({ data: enriched });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch ads' });
+    }
+});
+
+// POST: Save profile photo (base64)
+app.post('/api/profile/photo', authMiddleware, async (req, res) => {
+    try {
+        const { photoData } = req.body;
+        if (!photoData) return res.status(400).json({ msg: 'No photo data' });
+        await User.findOneAndUpdate({ email: req.user.email }, { profilePhoto: photoData });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to save photo' });
     }
 });
 
@@ -1286,9 +1319,11 @@ app.post('/api/ads/create', upload.array('images', 5), authMiddleware, async (re
         if (user) {
             user.points = (user.points || 0) + 4;
             await user.save();
-            // Link ad to poster
-            newAd.postedBy = user._id;
+            // Link ad to poster — save name + photo so cards show them without extra lookups
+            newAd.postedBy      = user._id;
             newAd.postedByEmail = user.email;
+            newAd.postedByName  = user.fullName    || null;
+            newAd.postedByPhoto = user.profilePhoto || null;
             await newAd.save();
             console.log(`✅ 4 points awarded for posting ad to: ${user.email}`);
         }
