@@ -29,6 +29,9 @@ webpush.setVapidDetails(
     VAPID_PRIVATE_KEY
 );
 
+// In server.js, ensure the file path is accessible
+app.use('/profile-photos', express.static(path.join(__dirname, 'profile-photos')));
+
 // ========================== MIDDLEWARE ==========================
 app.use('/uploads', express.static('uploads'))
 const corsOptions = {
@@ -57,6 +60,16 @@ mongoose.connect(MONGO_URI)
     .catch(err => console.error('❌ MongoDB Connection Error:', err.message));
 
 // ========================== USER MODEL ==========================
+
+app.get('/api/chat/search', authenticateToken, async (req, res) => {
+    const { name } = req.query;
+    const users = await User.find({
+        customChatName: new RegExp(name, 'i'),
+        allowChatSearch: true
+    }).select('customChatName');
+    res.json(users);
+});
+
 const userSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, required: true },
@@ -85,6 +98,11 @@ const userSchema = new mongoose.Schema({
         data: Buffer,
         uploadDate: { type: Date, default: Date.now }
     }],
+    isOver18: { type: Boolean, required: true },
+    customChatName: { type: String, maxlength: 8 },
+    showEmailInChat: { type: Boolean, default: true },
+    showCustomNameInChat: { type: Boolean, default: false },
+    allowChatSearch: { type: Boolean, default: true },
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
     plan: { type: String, default: 'free' },
