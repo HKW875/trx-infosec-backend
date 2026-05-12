@@ -61,7 +61,7 @@ mongoose.connect(MONGO_URI)
 
 // ========================== USER MODEL ==========================
 
-app.get('/api/chat/search', authenticateToken, async (req, res) => {
+app.get('/api/chat/search', authMiddleware, async (req, res) => {
     const { name } = req.query;
     const users = await User.find({
         customChatName: new RegExp(name, 'i'),
