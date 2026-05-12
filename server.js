@@ -342,17 +342,7 @@ app.get('/api/ads', async (req, res) => {
     }
 });
 
-// POST: Save profile photo (base64)
-app.post('/api/profile/photo', authMiddleware, async (req, res) => {
-    try {
-        const { photoData } = req.body;
-        if (!photoData) return res.status(400).json({ msg: 'No photo data' });
-        await User.findOneAndUpdate({ email: req.user.email }, { profilePhoto: photoData });
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ msg: 'Failed to save photo' });
-    }
-});
+
 
 // POST: Record a view for a listing
 app.post('/api/ads/:id/view', async (req, res) => {
@@ -378,6 +368,18 @@ const authMiddleware = (req, res, next) => {
         res.status(401).json({ msg: 'Invalid token' });
     }
 };
+
+// POST: Save profile photo (base64)
+app.post('/api/profile/photo', authMiddleware, async (req, res) => {
+    try {
+        const { photoData } = req.body;
+        if (!photoData) return res.status(400).json({ msg: 'No photo data' });
+        await User.findOneAndUpdate({ email: req.user.email }, { profilePhoto: photoData });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ msg: 'Failed to save photo' });
+    }
+});
 
 // ========================== WEB PUSH HELPER ==========================
 // Send a push notification to all subscriptions stored for a user.
