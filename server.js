@@ -61,14 +61,7 @@ mongoose.connect(MONGO_URI)
 
 // ========================== USER MODEL ==========================
 
-app.get('/api/chat/search', authMiddleware, async (req, res) => {
-    const { name } = req.query;
-    const users = await User.find({
-        customChatName: new RegExp(name, 'i'),
-        allowChatSearch: true
-    }).select('customChatName');
-    res.json(users);
-});
+
 
 const userSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -1803,6 +1796,15 @@ app.post('/api/mpesa/callback', async (req, res) => {
         console.error("Callback error:", err);
         res.json({ ResultCode: 0, ResultDesc: "Accepted" });
     }
+});
+
+app.get('/api/chat/search', authMiddleware, async (req, res) => {
+    const { name } = req.query;
+    const users = await User.find({
+        customChatName: new RegExp(name, 'i'),
+        allowChatSearch: true
+    }).select('customChatName');
+    res.json(users);
 });
 
 // ========================== ROOT ROUTE ==========================
