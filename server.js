@@ -1546,7 +1546,9 @@ app.post('/api/login', async (req, res) => {
         res.json({
             token,
             msg: 'Login successful',
-            points: user.points
+            points: user.points,
+            profilePhoto: user.profilePhoto || null,
+            fullName: user.fullName || ''
         });
 
     } catch (err) {
