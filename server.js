@@ -260,7 +260,7 @@ try {
         senderName:  { type: String },
         receiverId:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         receiverEmail:{ type: String },
-        message:     { type: String, required: true, maxlength: 2000 },
+        message:     { type: String, required: true },
         read:        { type: Boolean, default: false },
         createdAt:   { type: Date, default: Date.now }
     });
