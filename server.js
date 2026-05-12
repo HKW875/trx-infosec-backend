@@ -369,14 +369,73 @@ const authMiddleware = (req, res, next) => {
     }
 };
 
-// POST: Save profile photo (base64)
+// POST: Save profile photo — uploads to GitHub repo AND saves URL to MongoDB
 app.post('/api/profile/photo', authMiddleware, async (req, res) => {
     try {
         const { photoData } = req.body;
         if (!photoData) return res.status(400).json({ msg: 'No photo data' });
-        await User.findOneAndUpdate({ email: req.user.email }, { profilePhoto: photoData });
-        res.json({ success: true });
+
+        let photoUrl = photoData; // fallback: store base64 in MongoDB if GitHub upload fails
+
+        // ===== UPLOAD TO GITHUB =====
+        // Requires GITHUB_TOKEN env var (Personal Access Token with repo write scope)
+        const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+        const GITHUB_OWNER = 'HKW875';
+        const GITHUB_REPO  = 'trx-infosec-backend';
+        const GITHUB_BRANCH = 'main';
+
+        if (GITHUB_TOKEN && photoData.startsWith('data:image')) {
+            try {
+                // Extract base64 data (strip the data:image/...;base64, prefix)
+                const matches = photoData.match(/^data:([A-Za-z-+/]+);base64,(.+)$/);
+                if (matches && matches[2]) {
+                    const ext        = matches[1].includes('png') ? 'png' : 'jpg';
+                    const user       = await User.findOne({ email: req.user.email }).select('permanentID');
+                    const filename   = `profile-photos/${(user && user.permanentID) || Date.now()}.${ext}`;
+                    const base64Data = matches[2];
+                    const apiUrl     = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${filename}`;
+
+                    // Check if file already exists (needed for update SHA)
+                    let sha = undefined;
+                    try {
+                        const checkRes = await axios.get(apiUrl, {
+                            headers: {
+                                Authorization: `token ${GITHUB_TOKEN}`,
+                                Accept: 'application/vnd.github.v3+json'
+                            }
+                        });
+                        sha = checkRes.data.sha;
+                    } catch (e) { /* file doesn't exist yet — create new */ }
+
+                    const payload = {
+                        message: `Upload profile photo for ${req.user.email}`,
+                        content: base64Data,
+                        branch:  GITHUB_BRANCH,
+                        ...(sha ? { sha } : {})
+                    };
+
+                    const ghRes = await axios.put(apiUrl, payload, {
+                        headers: {
+                            Authorization: `token ${GITHUB_TOKEN}`,
+                            Accept: 'application/vnd.github.v3+json',
+                            'Content-Type': 'application/json'
+                        }
+                    });
+
+                    // Use raw GitHub URL so it can be displayed directly
+                    photoUrl = `https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/${GITHUB_BRANCH}/${filename}`;
+                    console.log(`✅ Profile photo uploaded to GitHub: ${photoUrl}`);
+                }
+            } catch (ghErr) {
+                console.error('GitHub photo upload failed, falling back to base64 storage:', ghErr.message);
+                // photoUrl remains as base64 — still works, just stored in MongoDB
+            }
+        }
+
+        await User.findOneAndUpdate({ email: req.user.email }, { profilePhoto: photoUrl });
+        res.json({ success: true, photoUrl });
     } catch (err) {
+        console.error('Profile photo save error:', err);
         res.status(500).json({ msg: 'Failed to save photo' });
     }
 });
@@ -1253,6 +1312,26 @@ app.post('/api/register', async (req, res) => {
         }
 
         await user.save();
+
+        // ===== NOTIFY ADMIN OF NEW USER REGISTRATION (full details) =====
+        const regBody = [
+            `👤 New User Registered on GrowthBase`,
+            ``,
+            `📧 Email:        ${email}`,
+            `📱 Mobile:       ${mobileNumber}`,
+            `💼 Occupation:   ${occupation}`,
+            `🆔 Profile ID:   ${user.permanentID}`,
+            `📅 Registered:   ${new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}`,
+            referredBy     ? `👥 Referred By:  ${referredBy}` : null,
+            referralPhone  ? `📞 Referral Ph:  ${referralPhone}` : null,
+            referralEmail  ? `📨 Referral Em:  ${referralEmail}` : null,
+        ].filter(Boolean).join('\n');
+        notifyAdmin(
+            '🆕 New User Registered',
+            regBody,
+            `admin-newuser-${user._id}`
+        );
+        // =============================================================
 
         // ===== REFERRAL POINTS CREDITING =====
         // Primary lookup: by referralEmail + mobileNumber (most reliable — email is unique and set at registration)
