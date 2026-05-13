@@ -1,10 +1,11 @@
 // ====================== TRX InfoSec Backend - FULLY CORRECTED VERSION ======================
+
 const express = require('express');
 const app = express();
 const multer = require("multer");
 const path = require('path');
 const fs = require('fs');
-
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 require('dotenv').config();
 
 const mongoose = require('mongoose');
@@ -47,7 +48,7 @@ const corsOptions = {
 };
 
 // This makes the 'uploads' folder public so the browser can see the images
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 
