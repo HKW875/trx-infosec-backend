@@ -29,7 +29,7 @@ webpush.setVapidDetails(
     VAPID_PUBLIC_KEY,
     VAPID_PRIVATE_KEY
 );
-
+app.use(express.static('public'));
 // ========================== MIDDLEWARE ==========================
 app.use('/uploads', express.static('uploads'))
 const corsOptions = {
