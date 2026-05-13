@@ -29,9 +29,6 @@ webpush.setVapidDetails(
     VAPID_PRIVATE_KEY
 );
 
-// In server.js, ensure the file path is accessible
-app.use('/profile-photos', express.static(path.join(__dirname, 'profile-photos')));
-
 // ========================== MIDDLEWARE ==========================
 app.use('/uploads', express.static('uploads'))
 const corsOptions = {
@@ -60,9 +57,6 @@ mongoose.connect(MONGO_URI)
     .catch(err => console.error('❌ MongoDB Connection Error:', err.message));
 
 // ========================== USER MODEL ==========================
-
-
-
 const userSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, required: true },
@@ -91,7 +85,6 @@ const userSchema = new mongoose.Schema({
         data: Buffer,
         uploadDate: { type: Date, default: Date.now }
     }],
-    
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
     plan: { type: String, default: 'free' },
@@ -275,22 +268,9 @@ try {
 }
 
 // ========================== MULTER SETUP ==========================
-// Ensure the upload directory exists
-const uploadDir = './uploads/ads/';
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, 'uploads/ads/');
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + '-' + file.originalname);
-    }
-});
-
-const upload = multer({ storage });
+// Images are no longer written to disk — they go straight to GitHub via the API.
+// Memory storage gives us file.buffer for base64 encoding.
+const upload = multer({ storage: multer.memoryStorage() });
 
 
 // ========================== ADS ROUTES ==========================
@@ -374,6 +354,17 @@ const authMiddleware = (req, res, next) => {
     } catch (err) {
         res.status(401).json({ msg: 'Invalid token' });
     }
+};
+
+// Optional auth — attaches req.user if a valid token is present, but does NOT block unauthenticated requests
+const optionalAuth = (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+            req.user = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+        } catch (e) { /* invalid token — treat as guest */ }
+    }
+    next();
 };
 
 // POST: Save profile photo — uploads to GitHub repo AND saves URL to MongoDB
@@ -1374,14 +1365,57 @@ app.post('/api/register', async (req, res) => {
 });
 
 // POST: Create a new Ad + Award 4 points to poster
-app.post('/api/ads/create', upload.array('images', 5), authMiddleware, async (req, res) => {
+app.post('/api/ads/create', upload.array('images', 5), optionalAuth, async (req, res) => {
     try {
         console.log("BODY:", req.body);
-        console.log("FILES:", req.files);
+        console.log("FILES:", req.files ? req.files.length + ' file(s)' : 'none');
 
-        const imagePaths = (req.files || []).map(file =>
-            '/uploads/ads/' + file.filename
-        );
+        // ===== UPLOAD AD IMAGES TO GITHUB =====
+        // Mirrors the same approach used by /api/profile/photo.
+        // Images are saved to the profile-photos/ folder in the same repo.
+        const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
+        const GITHUB_OWNER  = 'HKW875';
+        const GITHUB_REPO   = 'trx-infosec-backend';
+        const GITHUB_BRANCH = 'main';
+
+        const imagePaths = [];
+
+        for (const file of (req.files || [])) {
+            let imageUrl = null; // will be set to GitHub URL or left null on failure
+
+            if (GITHUB_TOKEN) {
+                try {
+                    const ext        = (file.mimetype || '').includes('png') ? 'png' : 'jpg';
+                    const uniqueName = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+                    const filename   = `profile-photos/${uniqueName}.${ext}`;
+                    const base64Data = file.buffer.toString('base64');
+                    const apiUrl     = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${filename}`;
+
+                    // No SHA check needed — every ad image gets a unique timestamp filename
+                    await axios.put(apiUrl, {
+                        message: `Upload ad image ${uniqueName}`,
+                        content: base64Data,
+                        branch:  GITHUB_BRANCH
+                    }, {
+                        headers: {
+                            Authorization: `token ${GITHUB_TOKEN}`,
+                            Accept: 'application/vnd.github.v3+json',
+                            'Content-Type': 'application/json'
+                        }
+                    });
+
+                    imageUrl = `https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/${GITHUB_BRANCH}/${filename}`;
+                    console.log(`✅ Ad image uploaded to GitHub: ${imageUrl}`);
+                } catch (ghErr) {
+                    console.error('GitHub ad image upload failed:', ghErr.message);
+                    // imageUrl remains null — ad will be saved without this image
+                }
+            } else {
+                console.warn('GITHUB_TOKEN not set — ad image skipped');
+            }
+
+            if (imageUrl) imagePaths.push(imageUrl);
+        }
 
         const newAd = new Advert({
             category: req.body.category,
@@ -1402,8 +1436,8 @@ app.post('/api/ads/create', upload.array('images', 5), authMiddleware, async (re
 
         await newAd.save();
 
-        // Award 4 points to the user who posted the ad
-        const user = await User.findOne({ email: req.user.email });
+        // Award 4 points to the user who posted the ad (only if authenticated)
+        const user = req.user ? await User.findOne({ email: req.user.email }) : null;
         if (user) {
             user.points = (user.points || 0) + 4;
             await user.save();
@@ -1422,7 +1456,7 @@ app.post('/api/ads/create', upload.array('images', 5), authMiddleware, async (re
         const adPhone      = req.body.phone      ? ` | Phone: ${req.body.phone}`           : '';
         const adDesc       = req.body.description ? ` | Description: ${req.body.description.slice(0, 120)}` : '';
         const adCategory   = req.body.category   ? ` | Category: ${req.body.category}`     : '';
-        const adPostedBy   = req.user.email;
+        const adPostedBy   = req.user ? req.user.email : 'guest';
         const adminAdBody  = `📢 New Ad Posted\nUser: ${adPostedBy}\nTitle: ${req.body.title}\nPrice: KES ${req.body.price}${adCategory}${adCondition}${adLocation}${adPhone}${adDesc}`;
         notifyAdmin(
             '📢 New Ad Posted',
@@ -1792,15 +1826,6 @@ app.post('/api/mpesa/callback', async (req, res) => {
         console.error("Callback error:", err);
         res.json({ ResultCode: 0, ResultDesc: "Accepted" });
     }
-});
-
-app.get('/api/chat/search', authMiddleware, async (req, res) => {
-    const { name } = req.query;
-    const users = await User.find({
-        customChatName: new RegExp(name, 'i'),
-        allowChatSearch: true
-    }).select('customChatName');
-    res.json(users);
 });
 
 // ========================== ROOT ROUTE ==========================
