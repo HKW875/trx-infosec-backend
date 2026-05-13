@@ -91,11 +91,7 @@ const userSchema = new mongoose.Schema({
         data: Buffer,
         uploadDate: { type: Date, default: Date.now }
     }],
-    isOver18: { type: Boolean, required: true },
-    customChatName: { type: String, maxlength: 8 },
-    showEmailInChat: { type: Boolean, default: true },
-    showCustomNameInChat: { type: Boolean, default: false },
-    allowChatSearch: { type: Boolean, default: true },
+    
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
     plan: { type: String, default: 'free' },
