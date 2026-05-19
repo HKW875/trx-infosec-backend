@@ -1,11 +1,10 @@
 // ====================== TRX InfoSec Backend - FULLY CORRECTED VERSION ======================
-
 const express = require('express');
 const app = express();
 const multer = require("multer");
 const path = require('path');
 const fs = require('fs');
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 require('dotenv').config();
 
 const mongoose = require('mongoose');
@@ -29,7 +28,7 @@ webpush.setVapidDetails(
     VAPID_PUBLIC_KEY,
     VAPID_PRIVATE_KEY
 );
-app.use(express.static('public'));
+
 // ========================== MIDDLEWARE ==========================
 app.use('/uploads', express.static('uploads'))
 const corsOptions = {
@@ -48,7 +47,7 @@ const corsOptions = {
 };
 
 // This makes the 'uploads' folder public so the browser can see the images
-
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 
@@ -112,6 +111,9 @@ const userSchema = new mongoose.Schema({
         budget: { type: String, trim: true },
         desiredDate: { type: String, trim: true },
         notifyMe: { type: String, trim: true, default: 'yes' },
+        locationText: { type: String, trim: true, default: null },
+        latitude:  { type: Number, default: null },
+        longitude: { type: Number, default: null },
         createdAt: { type: Date, default: Date.now }
     }],
     points: { type: Number, default: 0 },
@@ -193,6 +195,9 @@ try {
         budget: { type: String, trim: true },
         desiredDate: { type: String, trim: true },
         notifyMe: { type: String, trim: true, default: 'yes' },
+        locationText: { type: String, trim: true, default: null },  // manual location entry
+        latitude:  { type: Number, default: null },
+        longitude: { type: Number, default: null },
         userEmail: { type: String, trim: true, default: null },
         userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
         createdAt: { type: Date, default: Date.now }
@@ -216,6 +221,8 @@ try {
         adPrice:     { type: String },
         adPhone:     { type: String },
         adLocation:  { type: String },
+        adLat:       { type: Number, default: null },   // seller geo for Directions button
+        adLng:       { type: Number, default: null },
         adCategory:  { type: String },
         distance:    { type: Number },
         read:        { type: Boolean, default: false },
@@ -516,15 +523,16 @@ function haversineDistance(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-// Match a single goal against all ads, create in-app + push notifications
-// KEY FIX: geo/proximity is optional — if either side has no geo, still match on product+budget+category
+// Match a single goal against all ads — notify user of the SINGLE best match:
+// closest to their location, and among equally close, the lowest price.
+// Notification is sent ONCE per goal (forever deduplicated, not just 24h).
 async function matchGoalToAds(goal, userId, userEmail, userLat, userLng) {
     try {
         const query = {};
         if (goal.category) query.category = { $regex: new RegExp(goal.category, 'i') };
 
         const ads = await Advert.find(query);
-        let matchCount = 0;
+        const candidates = [];
 
         for (const ad of ads) {
             // 1. Product keyword match
@@ -534,48 +542,66 @@ async function matchGoalToAds(goal, userId, userEmail, userLat, userLng) {
             if (!productMatch) continue;
 
             // 2. Budget match: ad price <= user budget
+            const adPrice = parseFloat((ad.price || '0').toString().replace(/[^0-9.]/g, ''));
             if (goal.budget) {
                 const userBudget = parseFloat(goal.budget.toString().replace(/[^0-9.]/g, ''));
-                const adPrice = parseFloat((ad.price || '0').toString().replace(/[^0-9.]/g, ''));
                 if (!isNaN(userBudget) && !isNaN(adPrice) && adPrice > userBudget) continue;
             }
 
-            // 3. Proximity — ONLY filter by distance if BOTH sides have geo data
+            // 3. Compute distance (null if geo missing on either side)
             let distance = null;
             if (userLat && userLng && ad.geo && ad.geo.lat && ad.geo.lng) {
                 distance = parseFloat(haversineDistance(userLat, userLng, ad.geo.lat, ad.geo.lng).toFixed(2));
                 if (distance > 10) continue; // outside 10km — skip
             }
-            // If either side has no geo, we still match (no distance filter applied)
 
-            // 4. Deduplicate
+            // 4. Already notified for this goal+ad? Skip
             const exists = await GoalNotification.findOne({ userId, adId: ad._id, type: 'match' });
             if (exists) continue;
 
-            const distStr = distance !== null ? ` (${distance.toFixed(1)}km away)` : '';
-            const msg = `🎯 A match for your goal "${goal.product}" was found: "${ad.title}" at KES ${ad.price}${distStr}`;
-            await GoalNotification.create({
-                userId, userEmail, goalId: goal._id, adId: ad._id,
-                type: 'match', message: msg,
-                adTitle: ad.title, adPrice: ad.price, adPhone: ad.phone,
-                adLocation: ad.locationName, adCategory: ad.category,
-                distance, read: false
-            });
-            matchCount++;
-
-            // Send web push (works even when user is logged out)
-            const userDoc = await User.findById(userId).select('pushSubscriptions');
-            if (userDoc) {
-                await sendPushToUser(userDoc, {
-                    title: '🎯 GrowthBase: Match Found!',
-                    body: msg,
-                    icon: '/icons/icon-192.png',
-                    tag: `match-${ad._id}`,
-                    data: { type: 'match', adId: ad._id.toString() }
-                });
-            }
+            candidates.push({ ad, distance, adPrice });
         }
-        return matchCount;
+
+        if (candidates.length === 0) return 0;
+
+        // Pick the BEST match: closest first; if tied/no-geo, lowest price wins
+        candidates.sort((a, b) => {
+            if (a.distance !== null && b.distance !== null) {
+                if (Math.abs(a.distance - b.distance) > 0.5) return a.distance - b.distance; // closer wins
+            } else if (a.distance !== null) return -1; // geo-enabled ads preferred
+            else if (b.distance !== null) return 1;
+            return a.adPrice - b.adPrice; // same distance → lowest price
+        });
+
+        const best = candidates[0];
+        const { ad, distance } = best;
+        const distStr = distance !== null ? ` (${distance.toFixed(1)}km away)` : '';
+        const msg = `🎯 Best match for your goal "${goal.product}": "${ad.title}" at KES ${ad.price}${distStr} — closest &amp; best price!`;
+
+        await GoalNotification.create({
+            userId, userEmail, goalId: goal._id, adId: ad._id,
+            type: 'match', message: msg,
+            adTitle: ad.title, adPrice: ad.price, adPhone: ad.phone,
+            adLocation: ad.locationName, adCategory: ad.category,
+            adLat: (ad.geo && ad.geo.lat) || null,
+            adLng: (ad.geo && ad.geo.lng) || null,
+            distance, read: false
+        });
+
+        // Send ONE push notification
+        const userDoc = await User.findById(userId).select('pushSubscriptions');
+        if (userDoc) {
+            await sendPushToUser(userDoc, {
+                title: '🎯 GrowthBase: Best Match Found!',
+                body: msg,
+                icon: '/icons/icon-192.png',
+                tag: `match-goal-${goal._id}`,  // same tag per goal = replaces previous, no repeat
+                data: { type: 'match', adId: ad._id.toString() }
+            });
+        }
+
+        return 1;
+
     } catch (err) {
         console.error('Goal matching error:', err);
         return 0;
@@ -586,13 +612,17 @@ async function matchGoalToAds(goal, userId, userEmail, userLat, userLng) {
 // POST /api/goals — saves a user goal, checks buyer matches, AND notifies nearby sellers
 app.post('/api/goals', async (req, res) => {
     try {
-        const { product, category, budget, desiredDate, notifyMe, latitude, longitude } = req.body;
+        const { product, category, budget, desiredDate, notifyMe, latitude, longitude, locationText } = req.body;
 
         if (!product) {
             return res.status(400).json({ msg: 'Product or service name is required.' });
         }
 
-        const goalData = { product, category, budget, desiredDate, notifyMe: notifyMe || 'yes' };
+        const goalData = {
+            product, category, budget, desiredDate,
+            notifyMe: notifyMe || 'yes',
+            locationText: locationText || null
+        };
 
         // Check if request is authenticated
         const authHeader = req.headers.authorization;
@@ -605,7 +635,13 @@ app.post('/api/goals', async (req, res) => {
                     const userLat = latitude || (user.location && user.location.latitude);
                     const userLng = longitude || (user.location && user.location.longitude);
 
-                    user.goals.push(goalData);
+                    // Merge geo into goalData before pushing
+                    const enrichedGoal = {
+                        ...goalData,
+                        latitude:  latitude ? parseFloat(latitude) : null,
+                        longitude: longitude ? parseFloat(longitude) : null
+                    };
+                    user.goals.push(enrichedGoal);
                     await user.save();
                     const savedGoal = user.goals[user.goals.length - 1];
                     console.log(`✅ Goal saved to user profile: ${decoded.email}`);
@@ -903,7 +939,7 @@ app.post('/api/push/unsubscribe', authMiddleware, async (req, res) => {
 });
 
 // POST /api/proximity-check — called by frontend when user location changes
-// Checks user's goals vs nearby ads (within 10km)
+// Checks user's goals vs nearby ads (within 10km) — ONE notification per goal (forever)
 app.post('/api/proximity-check', authMiddleware, async (req, res) => {
     try {
         const { latitude, longitude } = req.body;
@@ -922,52 +958,78 @@ app.post('/api/proximity-check', authMiddleware, async (req, res) => {
 
         for (const goal of user.goals) {
             if (goal.notifyMe === 'no') continue;
+
+            // Use goal's saved lat/lng, or fallback to live position
+            const goalLat = goal.latitude || latitude;
+            const goalLng = goal.longitude || longitude;
+
+            // Find the SINGLE best candidate: closest & lowest price
+            const candidates = [];
             for (const ad of ads) {
-                // Category match
                 if (goal.category && ad.category &&
                     !ad.category.toLowerCase().includes(goal.category.toLowerCase()) &&
                     !goal.category.toLowerCase().includes(ad.category.toLowerCase())) continue;
 
-                const distance = haversineDistance(latitude, longitude, ad.geo.lat, ad.geo.lng);
-                if (distance <= 10) {  // Changed from 2km to 10km
-                    // Deduplicate: one proximity alert per ad per 24h per user
-                    const recentAlert = await GoalNotification.findOne({
-                        userId: user._id,
-                        adId: ad._id,
-                        type: 'proximity',
-                        createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
-                    });
-                    if (!recentAlert) {
-                        const msg = `📍 You're ${distance.toFixed(1)}km from a seller matching your goal "${goal.product}": "${ad.title}" at KES ${ad.price}`;
-                        await GoalNotification.create({
-                            userId: user._id,
-                            userEmail: user.email,
-                            goalId: goal._id,
-                            adId: ad._id,
-                            type: 'proximity',
-                            message: msg,
-                            adTitle: ad.title,
-                            adPrice: ad.price,
-                            adPhone: ad.phone,
-                            adLocation: ad.locationName,
-                            adCategory: ad.category,
-                            distance: parseFloat(distance.toFixed(2)),
-                            read: false
-                        });
-                        alertCount++;
+                const distance = haversineDistance(goalLat, goalLng, ad.geo.lat, ad.geo.lng);
+                if (distance > 10) continue;
 
-                        // Push notification (works when logged out)
-                        await sendPushToUser(user, {
-                            title: '📍 GrowthBase: Seller Nearby!',
-                            body: msg,
-                            icon: '/icon-192.png',
-                            badge: '/badge-72.png',
-                            tag: `proximity-${ad._id}`,
-                            data: { type: 'proximity', adId: ad._id.toString() }
-                        });
-                    }
+                const adPrice = parseFloat((ad.price || '0').toString().replace(/[^0-9.]/g, ''));
+                if (goal.budget) {
+                    const userBudget = parseFloat(goal.budget.toString().replace(/[^0-9.]/g, ''));
+                    if (!isNaN(userBudget) && !isNaN(adPrice) && adPrice > userBudget) continue;
                 }
+
+                candidates.push({ ad, distance: parseFloat(distance.toFixed(2)), adPrice });
             }
+
+            if (candidates.length === 0) continue;
+
+            // Sort: closest first, then lowest price
+            candidates.sort((a, b) => {
+                if (Math.abs(a.distance - b.distance) > 0.5) return a.distance - b.distance;
+                return a.adPrice - b.adPrice;
+            });
+
+            const best = candidates[0];
+            const { ad, distance } = best;
+
+            // ONE proximity alert per goal (forever deduped)
+            const alreadyNotified = await GoalNotification.findOne({
+                userId: user._id,
+                goalId: goal._id,
+                type: 'proximity'
+            });
+            if (alreadyNotified) continue;
+
+            const msg = `📍 ${distance.toFixed(1)}km from a seller matching your goal "${goal.product}": "${ad.title}" at KES ${ad.price} — closest & best price!`;
+            await GoalNotification.create({
+                userId: user._id,
+                userEmail: user.email,
+                goalId: goal._id,
+                adId: ad._id,
+                type: 'proximity',
+                message: msg,
+                adTitle: ad.title,
+                adPrice: ad.price,
+                adPhone: ad.phone,
+                adLocation: ad.locationName,
+                adLat: ad.geo.lat,
+                adLng: ad.geo.lng,
+                adCategory: ad.category,
+                distance,
+                read: false
+            });
+            alertCount++;
+
+            // Push notification — tagged per goal so no repeat
+            await sendPushToUser(user, {
+                title: '📍 GrowthBase: Seller Nearby!',
+                body: msg,
+                icon: '/icon-192.png',
+                badge: '/badge-72.png',
+                tag: `proximity-goal-${goal._id}`,
+                data: { type: 'proximity', adId: ad._id.toString() }
+            });
         }
 
         res.json({ proximityAlerts: alertCount });
@@ -978,7 +1040,7 @@ app.post('/api/proximity-check', authMiddleware, async (req, res) => {
 });
 
 // POST /api/match-goals-for-new-ad — called when a new ad is posted
-// Finds all users whose goals match this ad and creates notifications
+// Finds all users whose goals match this ad and creates ONE notification per user-goal
 app.post('/api/match-goals-for-new-ad', authMiddleware, async (req, res) => {
     try {
         const { adId } = req.body;
@@ -991,7 +1053,7 @@ app.post('/api/match-goals-for-new-ad', authMiddleware, async (req, res) => {
         const adText = `${ad.title} ${ad.description} ${ad.category}`.toLowerCase();
 
         // Find all users with goals that want notifications
-        const users = await User.find({ 'goals.0': { $exists: true } }).select('_id email goals');
+        const users = await User.find({ 'goals.0': { $exists: true } }).select('_id email goals location pushSubscriptions');
         let notifCount = 0;
 
         for (const user of users) {
@@ -1010,34 +1072,55 @@ app.post('/api/match-goals-for-new-ad', authMiddleware, async (req, res) => {
                 if (!productMatch) continue;
 
                 // Budget match
-                let budgetMatch = true;
                 if (goal.budget) {
                     const userBudget = parseFloat(goal.budget.toString().replace(/[^0-9.]/g, ''));
-                    if (!isNaN(userBudget) && !isNaN(adPrice)) {
-                        budgetMatch = adPrice <= userBudget;
-                    }
+                    if (!isNaN(userBudget) && !isNaN(adPrice) && adPrice > userBudget) continue;
                 }
-                if (!budgetMatch) continue;
 
-                // Check if notification already exists
-                const exists = await GoalNotification.findOne({ userId: user._id, adId: ad._id, type: 'match' });
-                if (!exists) {
-                    await GoalNotification.create({
-                        userId: user._id,
-                        userEmail: user.email,
-                        goalId: goal._id,
-                        adId: ad._id,
-                        type: 'match',
-                        message: `🎯 A new listing matches your goal "${goal.product}": "${ad.title}" at KES ${ad.price}`,
-                        adTitle: ad.title,
-                        adPrice: ad.price,
-                        adPhone: ad.phone,
-                        adLocation: ad.locationName,
-                        adCategory: ad.category,
-                        read: false
-                    });
-                    notifCount++;
+                // Proximity — use goal's saved lat/lng, or fallback to user's stored location
+                const goalLat = goal.latitude || (user.location && user.location.latitude);
+                const goalLng = goal.longitude || (user.location && user.location.longitude);
+                let distance = null;
+                if (goalLat && goalLng && ad.geo && ad.geo.lat && ad.geo.lng) {
+                    distance = parseFloat(haversineDistance(goalLat, goalLng, ad.geo.lat, ad.geo.lng).toFixed(2));
+                    if (distance > 10) continue; // outside 10km — skip
                 }
+
+                // ONE notification per goal (forever deduped — not just 24h)
+                const exists = await GoalNotification.findOne({ userId: user._id, goalId: goal._id, type: 'match' });
+                if (exists) continue;
+
+                const distStr = distance !== null ? ` (${distance.toFixed(1)}km away)` : '';
+                const msg = `🎯 Best match for your goal "${goal.product}": "${ad.title}" at KES ${ad.price}${distStr} — closest & best price!`;
+
+                await GoalNotification.create({
+                    userId: user._id,
+                    userEmail: user.email,
+                    goalId: goal._id,
+                    adId: ad._id,
+                    type: 'match',
+                    message: msg,
+                    adTitle: ad.title,
+                    adPrice: ad.price,
+                    adPhone: ad.phone,
+                    adLocation: ad.locationName,
+                    adLat: (ad.geo && ad.geo.lat) || null,
+                    adLng: (ad.geo && ad.geo.lng) || null,
+                    adCategory: ad.category,
+                    distance,
+                    read: false
+                });
+                notifCount++;
+
+                // Push notification — tag per goal ensures only one push per goal
+                await sendPushToUser(user, {
+                    title: '🎯 GrowthBase: Best Match Found!',
+                    body: msg,
+                    icon: '/icons/icon-192.png',
+                    badge: '/badge-72.png',
+                    tag: `match-goal-${goal._id}`,
+                    data: { type: 'match', adId: ad._id.toString() }
+                });
             }
         }
 
