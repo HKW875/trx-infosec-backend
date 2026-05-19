@@ -646,12 +646,16 @@ app.post('/api/goals', async (req, res) => {
                     const savedGoal = user.goals[user.goals.length - 1];
                     console.log(`✅ Goal saved to user profile: ${decoded.email}`);
 
-                    // ===== NOTIFY ADMIN OF NEW GOAL SUBMISSION =====
-                    const goalDate    = desiredDate ? ` | Desired by: ${desiredDate}` : '';
-                    const goalBudget  = budget      ? ` | Budget: KES ${budget}`       : '';
-                    const goalCat     = category    ? ` | Category: ${category}`       : '';
-                    const goalNotify  = notifyMe    ? ` | Notify me: ${notifyMe}`      : '';
-                    const adminGoalBody = `📋 New Goal Submitted\nUser: ${decoded.email}\nProduct: ${product}${goalCat}${goalBudget}${goalDate}${goalNotify}`;
+                    // ===== NOTIFY ADMIN OF NEW GOAL SUBMISSION (with full location details) =====
+                    const goalDate    = desiredDate   ? ` | Desired by: ${desiredDate}`                       : '';
+                    const goalBudget  = budget        ? ` | Budget: KES ${budget}`                             : '';
+                    const goalCat     = category      ? ` | Category: ${category}`                             : '';
+                    const goalNotify  = notifyMe      ? ` | Notify me: ${notifyMe}`                            : '';
+                    const goalLocTxt  = locationText  ? `\nLocation (text): ${locationText}`                   : '';
+                    const goalLatLng  = (latitude && longitude)
+                        ? `\nCoordinates: ${parseFloat(latitude).toFixed(6)}, ${parseFloat(longitude).toFixed(6)}\nGoogle Maps: https://www.google.com/maps?q=${parseFloat(latitude).toFixed(6)},${parseFloat(longitude).toFixed(6)}`
+                        : '';
+                    const adminGoalBody = `📋 New Goal Submitted\nUser: ${decoded.email}\nProduct: ${product}${goalCat}${goalBudget}${goalDate}${goalNotify}${goalLocTxt}${goalLatLng}`;
                     notifyAdmin(
                         '🎯 New Goal Submitted',
                         adminGoalBody,
@@ -681,12 +685,16 @@ app.post('/api/goals', async (req, res) => {
         const newGoal = new Goal({ ...goalData, userEmail: null });
         await newGoal.save();
 
-        // ===== NOTIFY ADMIN OF ANONYMOUS GOAL SUBMISSION =====
-        const anonDate    = desiredDate ? ` | Desired by: ${desiredDate}` : '';
-        const anonBudget  = budget      ? ` | Budget: KES ${budget}`       : '';
-        const anonCat     = category    ? ` | Category: ${category}`       : '';
-        const anonNotify  = notifyMe    ? ` | Notify me: ${notifyMe}`      : '';
-        const anonGoalBody = `📋 New Anonymous Goal Submitted\nProduct: ${product}${anonCat}${anonBudget}${anonDate}${anonNotify}`;
+        // ===== NOTIFY ADMIN OF ANONYMOUS GOAL SUBMISSION (with full location details) =====
+        const anonDate    = desiredDate   ? ` | Desired by: ${desiredDate}`                 : '';
+        const anonBudget  = budget        ? ` | Budget: KES ${budget}`                       : '';
+        const anonCat     = category      ? ` | Category: ${category}`                       : '';
+        const anonNotify  = notifyMe      ? ` | Notify me: ${notifyMe}`                      : '';
+        const anonLocTxt  = locationText  ? `\nLocation (text): ${locationText}`             : '';
+        const anonLatLng  = (latitude && longitude)
+            ? `\nCoordinates: ${parseFloat(latitude).toFixed(6)}, ${parseFloat(longitude).toFixed(6)}\nGoogle Maps: https://www.google.com/maps?q=${parseFloat(latitude).toFixed(6)},${parseFloat(longitude).toFixed(6)}`
+            : '';
+        const anonGoalBody = `📋 New Anonymous Goal Submitted\nProduct: ${product}${anonCat}${anonBudget}${anonDate}${anonNotify}${anonLocTxt}${anonLatLng}`;
         notifyAdmin(
             '🎯 New Goal Submitted (Anonymous)',
             anonGoalBody,
@@ -709,6 +717,9 @@ app.post('/api/goals', async (req, res) => {
 });
 
 // ========================== SELLER NOTIFICATION HELPER ==========================
+// Notifies ALL sellers/advertisers whose ad title or category matches the goal's
+// category or product keyword — distance is NOT a filter (sellers are notified
+// regardless of how far they are from the buyer).
 async function notifySellersOfNewGoal(goal, buyerId, buyerEmail, buyerLat, buyerLng) {
     try {
         const catQuery = goal.category
@@ -717,13 +728,21 @@ async function notifySellersOfNewGoal(goal, buyerId, buyerEmail, buyerLat, buyer
         const ads = await Advert.find(catQuery);
 
         for (const ad of ads) {
-            // Proximity check — only filter by distance if BOTH buyer and ad have geo
+            // Additional product-keyword match against ad title (broader than category alone)
+            if (goal.product) {
+                const productWords = goal.product.toLowerCase().split(/\s+/).filter(Boolean);
+                const adText = `${ad.title} ${ad.description} ${ad.category}`.toLowerCase();
+                const productMatch = productWords.some(w => adText.includes(w));
+                // Only skip if BOTH category and product don't match at all
+                // Category already matched above via catQuery; product match is a bonus check.
+                // We keep all category-matched ads; product-keyword match gives a richer message.
+            }
+
+            // Compute distance for informational purposes only (no filtering)
             let distance = null;
             if (buyerLat && buyerLng && ad.geo && ad.geo.lat && ad.geo.lng) {
                 distance = parseFloat(haversineDistance(buyerLat, buyerLng, ad.geo.lat, ad.geo.lng).toFixed(2));
-                if (distance > 10) continue; // outside 10km, skip
             }
-            // If geo missing on either side, still notify (no distance filter)
 
             // Find seller: first try postedBy on ad, then by phone match
             let seller = null;
@@ -766,7 +785,7 @@ async function notifySellersOfNewGoal(goal, buyerId, buyerEmail, buyerLat, buyer
             });
 
             await sendPushToUser(seller, {
-                title: '🛒 New Buyer Near You!',
+                title: '🛒 New Buyer Interested!',
                 body: msg,
                 icon: '/icons/icon-192.png',
                 tag: `seller-goal-${ad._id}-${Date.now()}`,
